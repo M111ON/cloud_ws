@@ -16,7 +16,14 @@ import {
   handleWsStaleDetect,
   handleWsPoolStatus,
   handleWorkspaceEditor,
+  ensureProjectTables,
+  handleProjectList,
+  handleProjectCreate,
+  handleProjectUpdate,
+  handleProjectDelete,
+  handleWsAssign,
 } from "./workspace_handlers";
+import { adminHtml } from "./admin_html";
 
 export interface Env {
   cloud_memory_db: D1Database;
@@ -163,6 +170,11 @@ async function getCachedQuery(env: Env, qhash: string): Promise<string | null> {
     .first<{ result: string; ts: number }>();
   if (!row) return null;
   if (Date.now() - (row.ts || 0) > CACHE_TTL_MS) return null;
+  // Bump hit counter (admin dashboard shows usage)
+  await env.cloud_memory_db
+    .prepare("UPDATE query_cache SET hits = COALESCE(hits,0) + 1 WHERE hash = ?")
+    .bind(qhash)
+    .run();
   return row.result;
 }
 
@@ -175,8 +187,12 @@ async function putCachedQuery(env: Env, qhash: string, q: string, result: string
 
 async function ensureQueryCacheTable(env: Env): Promise<void> {
   await env.cloud_memory_db
-    .prepare("CREATE TABLE IF NOT EXISTS query_cache (hash TEXT PRIMARY KEY, q TEXT, result TEXT, ts INTEGER)")
+    .prepare("CREATE TABLE IF NOT EXISTS query_cache (hash TEXT PRIMARY KEY, q TEXT, result TEXT, ts INTEGER, hits INTEGER DEFAULT 0)")
     .run();
+  // Migration: add hits column to existing tables
+  try {
+    await env.cloud_memory_db.prepare("ALTER TABLE query_cache ADD COLUMN hits INTEGER DEFAULT 0").run();
+  } catch { /* column already exists */ }
 }
 
 async function searchChunks(env: Env, q: string, k: number): Promise<{ results: ContextResult[]; query: string }> {
@@ -370,10 +386,6 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
 }
 
 async function handleStatus(request: Request, env: Env): Promise<Response> {
-  if (!checkAuth(request, env)) {
-    return new Response("Unauthorized", { status: 401, headers: corsHeaders(request, env) });
-  }
-
   const chunkCount = await env.cloud_memory_db
     .prepare("SELECT COUNT(*) as count FROM chunks")
     .first<{ count: number }>();
@@ -444,6 +456,47 @@ async function handleCleanup(request: Request, env: Env): Promise<Response> {
 
   return new Response(JSON.stringify({ deleted: ids.length }), {
     headers: { "Content-Type": "application/json", ...(request ? corsHeaders(request, env) : corsHeadersAny()) },
+  });
+}
+
+// ─── Query cache admin (dashboard) ────────────────────────────────────────
+
+async function handleAdminCacheList(request: Request, env: Env): Promise<Response> {
+  if (!checkAuth(request, env)) {
+    return new Response("Unauthorized", { status: 401, headers: corsHeaders(request, env) });
+  }
+  await ensureQueryCacheTable(env);
+  const rows = await env.cloud_memory_db
+    .prepare("SELECT hash, q, LENGTH(result) AS size, ts, hits FROM query_cache ORDER BY ts DESC")
+    .all<{ hash: string; q: string; size: number; ts: number; hits: number }>();
+  const entries = (rows.results || []).map((r) => ({
+    hash: r.hash,
+    q: r.q,
+    size: r.size || 0,
+    ts: r.ts,
+    hits: r.hits || 0,
+  }));
+  const totalSize = entries.reduce((s, e) => s + e.size, 0);
+  return new Response(JSON.stringify({ ok: true, count: entries.length, total_size: totalSize, entries }), {
+    headers: { "Content-Type": "application/json", ...corsHeaders(request, env) },
+  });
+}
+
+async function handleAdminCacheClear(request: Request, env: Env): Promise<Response> {
+  if (!checkAuth(request, env)) {
+    return new Response("Unauthorized", { status: 401, headers: corsHeaders(request, env) });
+  }
+  await ensureQueryCacheTable(env);
+  const body = await request.json<{ hash?: string }>().catch(() => ({ hash: undefined }));
+  if (body.hash) {
+    await env.cloud_memory_db.prepare("DELETE FROM query_cache WHERE hash = ?").bind(body.hash).run();
+    return new Response(JSON.stringify({ ok: true, cleared: 1, hash: body.hash }), {
+      headers: { "Content-Type": "application/json", ...corsHeaders(request, env) },
+    });
+  }
+  const res = await env.cloud_memory_db.prepare("DELETE FROM query_cache").run();
+  return new Response(JSON.stringify({ ok: true, cleared: res.meta?.changes || 0 }), {
+    headers: { "Content-Type": "application/json", ...corsHeaders(request, env) },
   });
 }
 
@@ -736,6 +789,70 @@ const MCP_TOOLS = [
       required: ["workspace_id", "q"],
     },
   },
+
+  // ─── Project tools (nest above workspaces) ────────────────────
+  {
+    name: "project_list",
+    description:
+      "List projects (nests). A project groups multiple workspace sessions under one umbrella. Returns each project with session stats: workspace_count, active, paused, archived, claimed, stale. Use at session start to see the whole landscape of active work. Includes an 'unsorted' bucket for workspaces without a project.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "project_create",
+    description:
+      "Create a project (nest) to group multiple workspace sessions. Use when starting a multi-session effort (e.g. a project spanning several workspaces). Requires api_key.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Project name (e.g. 'DWGLS')" },
+        description: { type: "string", description: "Optional short description" },
+        api_key: { type: "string", description: "API key for write access (required)" },
+      },
+      required: ["name", "api_key"],
+    },
+  },
+  {
+    name: "project_update",
+    description:
+      "Rename or update a project's description. Requires api_key.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "Project ID" },
+        name: { type: "string", description: "New name (optional)" },
+        description: { type: "string", description: "New description (optional)" },
+        api_key: { type: "string", description: "API key for write access (required)" },
+      },
+      required: ["project_id", "api_key"],
+    },
+  },
+  {
+    name: "project_delete",
+    description:
+      "Delete a project. Its workspaces are unassigned (become 'unsorted') — workspace data is NOT deleted. Requires api_key.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "Project ID" },
+        api_key: { type: "string", description: "API key for write access (required)" },
+      },
+      required: ["project_id", "api_key"],
+    },
+  },
+  {
+    name: "ws_assign",
+    description:
+      "Move a workspace into a project (nest), or out of it (pass empty project_id to unassign). Use to organize sessions under a project umbrella. Requires api_key.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace_id: { type: "string", description: "Workspace ID" },
+        project_id: { type: "string", description: "Project ID, or empty string to unassign" },
+        api_key: { type: "string", description: "API key for write access (required)" },
+      },
+      required: ["workspace_id", "api_key"],
+    },
+  },
 ];
 
 async function handleMcp(request: Request, env: Env): Promise<Response> {
@@ -761,7 +878,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       return mcpJsonResponse(id, {
         protocolVersion: MCP_PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: "cloud-memory", version: "2.1.0" },
+        serverInfo: { name: "cloud-memory", version: "2.2.0" },
       });
 
     case "notifications/initialized":
@@ -814,7 +931,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
                 chunks: chunkCount?.count || 0,
                 vectorize_index: "cloud-memory-vectors",
                 active_workspaces: wsCount?.count || 0,
-                version: "2.1.0",
+                version: "2.2.0",
               }, null, 2) }],
             });
           }
@@ -1155,6 +1272,95 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
             });
           }
 
+          case "project_list": {
+            await ensureProjectTables(env);
+            const fakeReq = new Request("https://projects");
+            const resp = await handleProjectList(fakeReq, env);
+            const data = await resp.json();
+            return mcpJsonResponse(id, {
+              content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+            });
+          }
+
+          case "project_create": {
+            const apiKey = String(args.api_key || "") || mcpKey;
+            if (apiKey !== env.API_KEY) {
+              return mcpErrorResponse(id, -32603, "Invalid API key — write access denied");
+            }
+            const name = String(args.name || "").trim();
+            if (!name) return mcpErrorResponse(id, -32602, "project_create requires 'name'");
+            await ensureProjectTables(env);
+            const fakeReq = new Request("https://projects", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+              body: JSON.stringify({ name, description: args.description || undefined }),
+            });
+            const resp = await handleProjectCreate(fakeReq, env);
+            const data = await resp.json();
+            return mcpJsonResponse(id, {
+              content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+            });
+          }
+
+          case "project_update": {
+            const apiKey = String(args.api_key || "") || mcpKey;
+            if (apiKey !== env.API_KEY) {
+              return mcpErrorResponse(id, -32603, "Invalid API key — write access denied");
+            }
+            const pid = String(args.project_id || "");
+            if (!pid) return mcpErrorResponse(id, -32602, "project_update requires 'project_id'");
+            await ensureProjectTables(env);
+            const fakeReq = new Request(`https://projects/${pid}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+              body: JSON.stringify({ name: args.name, description: args.description }),
+            });
+            const resp = await handleProjectUpdate(fakeReq, env, pid);
+            const data = await resp.json();
+            return mcpJsonResponse(id, {
+              content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+            });
+          }
+
+          case "project_delete": {
+            const apiKey = String(args.api_key || "") || mcpKey;
+            if (apiKey !== env.API_KEY) {
+              return mcpErrorResponse(id, -32603, "Invalid API key — write access denied");
+            }
+            const pid = String(args.project_id || "");
+            if (!pid) return mcpErrorResponse(id, -32602, "project_delete requires 'project_id'");
+            await ensureProjectTables(env);
+            const fakeReq = new Request(`https://projects/${pid}`, {
+              method: "DELETE",
+              headers: { "X-API-Key": apiKey },
+            });
+            const resp = await handleProjectDelete(fakeReq, env, pid);
+            const data = await resp.json();
+            return mcpJsonResponse(id, {
+              content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+            });
+          }
+
+          case "ws_assign": {
+            const apiKey = String(args.api_key || "") || mcpKey;
+            if (apiKey !== env.API_KEY) {
+              return mcpErrorResponse(id, -32603, "Invalid API key — write access denied");
+            }
+            const wsId = String(args.workspace_id || "");
+            if (!wsId) return mcpErrorResponse(id, -32602, "ws_assign requires 'workspace_id'");
+            await ensureProjectTables(env);
+            const fakeReq = new Request(`https://ws/${wsId}/assign`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+              body: JSON.stringify({ project_id: args.project_id || null }),
+            });
+            const resp = await handleWsAssign(fakeReq, env, wsId);
+            const data = await resp.json();
+            return mcpJsonResponse(id, {
+              content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+            });
+          }
+
           default:
             return mcpErrorResponse(id, -32602, `Unknown tool: ${toolName}`);
         }
@@ -1321,10 +1527,38 @@ export default {
           await ensureWorkspaceTables(env);
           return await handleWsStaleDetect(request, env);
 
+        // ─── Admin dashboard ────────────────────────────────────
+        case "/admin":
+          return new Response(adminHtml(), {
+            headers: { "Content-Type": "text/html; charset=utf-8", ...(request ? corsHeaders(request, env) : corsHeadersAny()) },
+          });
+
+        case "/admin/cache":
+          if (request.method !== "GET") return new Response("Method not allowed", { status: 405, headers: corsHeaders(request, env) });
+          return await handleAdminCacheList(request, env);
+
+        case "/admin/cache/clear":
+          if (request.method !== "POST") return new Response("Method not allowed", { status: 405, headers: corsHeaders(request, env) });
+          return await handleAdminCacheClear(request, env);
+
+        // ─── Project routes (nest above workspaces) ──────────────
+        case "/projects":
+          if (request.method === "GET") return await handleProjectList(request, env);
+          if (request.method === "POST") return await handleProjectCreate(request, env);
+          return new Response("Method not allowed", { status: 405, headers: corsHeaders(request, env) });
+
         case "/":
           return handleWebUI();
 
         default: {
+          // Check for /projects/:id routes
+          const projMatch = path.match(/^\/projects\/([a-zA-Z0-9_-]+)$/);
+          if (projMatch) {
+            const projId = projMatch[1];
+            if (request.method === "POST") return await handleProjectUpdate(request, env, projId);
+            if (request.method === "DELETE") return await handleProjectDelete(request, env, projId);
+            return new Response("Method not allowed", { status: 405, headers: corsHeaders(request, env) });
+          }
           // Check for /workspace/:id routes
           const wsMatch = path.match(/^\/workspace\/([a-zA-Z0-9_-]+)(\/.*)?$/);
           if (wsMatch) {
@@ -1350,6 +1584,8 @@ export default {
               if (request.method === "POST") return await handleWsClaim(request, env, wsId);
             } else if (subPath === "/release") {
               if (request.method === "POST") return await handleWsRelease(request, env, wsId);
+            } else if (subPath === "/assign") {
+              if (request.method === "POST") return await handleWsAssign(request, env, wsId);
             }
             return new Response("Method not allowed", { status: 405, headers: corsHeaders(request, env) });
           }
@@ -1357,9 +1593,10 @@ export default {
           return new Response(
             JSON.stringify({
               name: "cloud-memory-worker",
-              version: "2.0.0",
+              version: "2.2.0",
               endpoints: {
                 "GET /": "Search UI (open in browser)",
+                "GET /admin": "Admin dashboard: pool + editor + query cache",
                 "POST /mcp": "MCP server (memory + workspace tools)",
                 "POST /ingest": "Store chunks with vectors (body: IngestRequest[])",
                 "POST /search": "Semantic search (body: {q: string, k?: number})",
@@ -1367,10 +1604,17 @@ export default {
                 "POST /workspace/create": "Create workspace (body: {name, state?})",
                 "GET /workspace/list": "List active workspaces",
                 "GET /workspace/:id": "Load full workspace state",
-                "POST /workspace/:id": "Update workspace state (merge)",
+                "POST /workspace/:id": "Update workspace state (merge + remove)",
                 "POST /workspace/:id/checkpoint": "4-way checkpoint snapshot",
                 "GET /workspace/:id/checkpoints": "List checkpoints",
                 "POST /workspace/:id/archive": "Archive workspace",
+                "GET /admin/cache": "List query cache entries",
+                "POST /admin/cache/clear": "Clear query cache (body: {hash?})",
+                "GET /projects": "List projects (nests) with session stats",
+                "POST /projects": "Create project (body: {name, description?})",
+                "POST /projects/:id": "Rename/update project",
+                "DELETE /projects/:id": "Delete project (workspaces become unsorted)",
+                "POST /workspace/:id/assign": "Move workspace into/out of project (body: {project_id?})",
               },
             }),
             { headers: { "Content-Type": "application/json", ...(request ? corsHeaders(request, env) : corsHeadersAny()) } }

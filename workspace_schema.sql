@@ -9,6 +9,17 @@
 -- 4-way checkpoint: pool / vault / fact / cloud
 -- ═══════════════════════════════════════════════════════════════
 
+-- Project = "nest" layer that groups multiple workspaces (sessions).
+-- A project covers >1 concurrent session; each workspace belongs to one
+-- project (NULL = unsorted). Label on workspaces remains a free-form tag.
+CREATE TABLE IF NOT EXISTS projects (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  created_at INTEGER,
+  updated_at INTEGER
+);
+
 -- Workspace metadata
 CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY,
@@ -18,6 +29,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
   claimed_by TEXT,                -- agent/machine that claimed this workspace (NULL = unclaimed)
   claimed_at INTEGER,             -- when claim was made
   heartbeat_at INTEGER,           -- last heartbeat timestamp
+  project_id TEXT,                -- parent project (nest) this session belongs to
   file_count INTEGER DEFAULT 0,
   variable_count INTEGER DEFAULT 0,
   decision_count INTEGER DEFAULT 0,
@@ -58,3 +70,4 @@ CREATE INDEX IF NOT EXISTS idx_ws_status ON workspaces(status);
 CREATE INDEX IF NOT EXISTS idx_ws_state_ws ON workspace_state(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_ws_ckpt_ws ON workspace_checkpoints(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_ws_ckpt_seq ON workspace_checkpoints(workspace_id, seq);
+CREATE INDEX IF NOT EXISTS idx_ws_project ON workspaces(project_id);

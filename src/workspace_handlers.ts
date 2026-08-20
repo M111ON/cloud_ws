@@ -21,6 +21,7 @@ export interface WorkspaceBundle {
   id: string;
   name: string;
   label: string | null;
+  project_id: string | null;
   status: 'active' | 'paused' | 'archived';
   state: WorkspaceState;
   created_at: number;
@@ -355,6 +356,7 @@ async function loadBundle(env: Env, wsId: string): Promise<WorkspaceBundle | nul
     id: meta.id,
     name: meta.name,
     label: meta.label,
+    project_id: meta.project_id || null,
     status: meta.status,
     state,
     created_at: meta.created_at,
@@ -379,6 +381,7 @@ export async function handleWsCreate(request: Request, env: Env): Promise<Respon
   const body = await request.json<{
     name?: string;
     label?: string;
+    project_id?: string | null;
     state?: Partial<WorkspaceState>;
   }>();
 
@@ -391,10 +394,10 @@ export async function handleWsCreate(request: Request, env: Env): Promise<Respon
   // Insert workspace metadata
   await env.cloud_memory_db
     .prepare(
-      `INSERT INTO workspaces (id, name, label, status, created_at, updated_at)
-       VALUES (?, ?, ?, 'active', ?, ?)`
+      `INSERT INTO workspaces (id, name, label, project_id, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'active', ?, ?)`
     )
-    .bind(id, name, body.label || null, now, now)
+    .bind(id, name, body.label || null, body.project_id || null, now, now)
     .run();
 
   // Insert initial state entries
@@ -494,6 +497,7 @@ export async function handleWsList(request: Request, env: Env): Promise<Response
       id: r.id,
       name: r.name,
       label: r.label,
+      project_id: r.project_id || null,
       status: r.status,
       file_count: r.file_count,
       variable_count: r.variable_count,
@@ -531,7 +535,15 @@ export async function handleWsUpdate(request: Request, env: Env, wsId: string): 
     .first();
   if (!existing) return errResp("Workspace not found", 404, request, env);
 
-  const body = await request.json<{ state?: Partial<WorkspaceState>; agent?: string }>();
+  const body = await request.json<{
+    state?: Partial<WorkspaceState>;
+    agent?: string;
+    remove?: { files?: string[]; variables?: string[]; decisions?: string[]; context?: boolean };
+    name?: string;
+    label?: string;
+    status?: "active" | "paused";
+    project_id?: string | null;
+  }>();
   const state = body.state || {};
 
   // Write guard: require a live write lease (read-only load always allowed)
@@ -601,6 +613,43 @@ export async function handleWsUpdate(request: Request, env: Env, wsId: string): 
     );
   }
 
+  // Delete state entries (remove support: { files?: string[], variables?: string[], decisions?: string[], context?: boolean })
+  const remove = body.remove || {};
+  if (remove.files && remove.files.length > 0) {
+    for (const key of remove.files) {
+      statements.push(
+        env.cloud_memory_db
+          .prepare("DELETE FROM workspace_state WHERE workspace_id = ? AND category = 'file' AND key = ?")
+          .bind(wsId, key)
+      );
+    }
+  }
+  if (remove.variables && remove.variables.length > 0) {
+    for (const key of remove.variables) {
+      statements.push(
+        env.cloud_memory_db
+          .prepare("DELETE FROM workspace_state WHERE workspace_id = ? AND category = 'variable' AND key = ?")
+          .bind(wsId, key)
+      );
+    }
+  }
+  if (remove.decisions && remove.decisions.length > 0) {
+    for (const id of remove.decisions) {
+      statements.push(
+        env.cloud_memory_db
+          .prepare("DELETE FROM workspace_state WHERE workspace_id = ? AND category = 'decision' AND key = ?")
+          .bind(wsId, id)
+      );
+    }
+  }
+  if (remove.context) {
+    statements.push(
+      env.cloud_memory_db
+        .prepare("DELETE FROM workspace_state WHERE workspace_id = ? AND category = 'context'")
+        .bind(wsId)
+    );
+  }
+
   if (statements.length > 0) {
     await env.cloud_memory_db.batch(statements);
   }
@@ -629,6 +678,31 @@ export async function handleWsUpdate(request: Request, env: Env, wsId: string): 
       wsId
     )
     .run();
+
+  // Update workspace metadata (name / label / status / project) when provided
+  const metaName = body.name?.trim();
+  if (metaName || body.label !== undefined || body.status || body.project_id !== undefined) {
+    const meta: string[] = ["updated_at=?"];
+    const vals: (string | number)[] = [now];
+    if (metaName) {
+      meta.push("name=?");
+      vals.push(metaName);
+    }
+    if (body.label !== undefined) {
+      meta.push("label=?");
+      vals.push(body.label || null);
+    }
+    if (body.status) {
+      meta.push("status=?", "claimed_by=NULL", "claimed_at=NULL");
+      vals.push(body.status);
+    }
+    if (body.project_id !== undefined) {
+      meta.push("project_id=?");
+      vals.push(body.project_id || null);
+    }
+    vals.push(wsId);
+    await env.cloud_memory_db.prepare(`UPDATE workspaces SET ${meta.join(", ")} WHERE id=?`).bind(...vals).run();
+  }
 
   const bundle = await loadBundle(env, wsId);
   return jsonResp({ ok: true, workspace: bundle });
@@ -752,9 +826,10 @@ export async function handleWsCheckpoint(
         }
       }
 
-      if (statements.length > 0) {
-        await env.cloud_memory_db.batch(statements);
-      }
+if (statements.length > 0) {
+    await env.cloud_memory_db.batch(statements);
+  }
+
       if (vectors.length > 0) {
         await env.VECTORIZE.upsert(vectors);
       }
@@ -1749,3 +1824,152 @@ export function handleWorkspaceEditor(env: Env): Response {
   });
 }
 */
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Project layer — "nest" grouping multiple workspace sessions
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+export async function ensureProjectTables(env: Env): Promise<void> {
+  await env.cloud_memory_db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS projects (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT,
+        created_at INTEGER,
+        updated_at INTEGER
+      )`
+    )
+    .run();
+  // workspaces.project_id column migration (idempotent)
+  try {
+    await env.cloud_memory_db.prepare("ALTER TABLE workspaces ADD COLUMN project_id TEXT").run();
+  } catch {
+    // column already exists
+  }
+  try {
+    await env.cloud_memory_db.prepare("CREATE INDEX IF NOT EXISTS idx_ws_project ON workspaces(project_id)").run();
+  } catch {
+    // ignore
+  }
+}
+
+/** GET /projects — list projects with per-project session stats */
+export async function handleProjectList(request: Request, env: Env): Promise<Response> {
+  await ensureProjectTables(env);
+  const projects = await env.cloud_memory_db
+    .prepare("SELECT * FROM projects ORDER BY created_at ASC")
+    .all<any>();
+  const projs = (projects.results || []).map((p) => ({
+    id: p.id,
+    name: p.name,
+    description: p.description || null,
+    created_at: p.created_at,
+    updated_at: p.updated_at,
+    workspace_count: 0,
+    active: 0,
+    paused: 0,
+    archived: 0,
+    claimed: 0,
+    stale: 0,
+  }));
+
+  const now = Date.now();
+  const stats = await env.cloud_memory_db
+    .prepare(
+      `SELECT project_id, status, COUNT(*) AS n,
+              SUM(CASE WHEN claimed_by IS NOT NULL THEN 1 ELSE 0 END) AS claimed,
+              SUM(CASE WHEN (heartbeat_at IS NOT NULL AND heartbeat_at < ?) THEN 1 ELSE 0 END) AS stale
+       FROM workspaces GROUP BY project_id, status`
+    )
+    .bind(now - 2 * 3600 * 1000)
+    .all<any>();
+
+  const byId: Record<string, any> = {};
+  projs.forEach((p) => { byId[p.id] = p; });
+  const unsorted = { id: "", name: "(unsorted)", description: null, created_at: 0, updated_at: 0, workspace_count: 0, active: 0, paused: 0, archived: 0, claimed: 0, stale: 0 };
+
+  for (const s of stats.results || []) {
+    const key = s.project_id || "";
+    const bucket = key ? byId[key] : unsorted;
+    if (!bucket) continue;
+    bucket.workspace_count += s.n;
+    bucket[s.status] = (bucket[s.status] || 0) + s.n;
+    bucket.claimed += s.claimed || 0;
+    bucket.stale += s.stale || 0;
+  }
+
+  return jsonResp({
+    ok: true,
+    count: projs.length,
+    projects: projs,
+    unsorted,
+  });
+}
+
+/** POST /projects — create a project (auth required) */
+export async function handleProjectCreate(request: Request, env: Env): Promise<Response> {
+  if (!checkAuth(request, env)) return errResp("Unauthorized", 401, request, env);
+  await ensureProjectTables(env);
+  const body = await request.json<{ name?: string; description?: string }>();
+  const name = body.name?.trim();
+  if (!name) return errResp("name is required", 400, request, env);
+  const id = generateId();
+  const now = Date.now();
+  await env.cloud_memory_db
+    .prepare("INSERT INTO projects (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+    .bind(id, name, body.description?.trim() || null, now, now)
+    .run();
+  const row = await env.cloud_memory_db.prepare("SELECT * FROM projects WHERE id = ?").bind(id).first<any>();
+  return jsonResp({ ok: true, project: { id: row.id, name: row.name, description: row.description, created_at: row.created_at, updated_at: row.updated_at } }, 201, request, env);
+}
+
+/** POST /projects/:id — rename/update a project (auth required) */
+export async function handleProjectUpdate(request: Request, env: Env, projectId: string): Promise<Response> {
+  if (!checkAuth(request, env)) return errResp("Unauthorized", 401, request, env);
+  await ensureProjectTables(env);
+  const existing = await env.cloud_memory_db.prepare("SELECT id FROM projects WHERE id = ?").bind(projectId).first();
+  if (!existing) return errResp("Project not found", 404, request, env);
+  const body = await request.json<{ name?: string; description?: string }>();
+  const meta: string[] = ["updated_at=?"];
+  const vals: (string | number)[] = [Date.now()];
+  if (body.name !== undefined) { const n = body.name.trim(); if (n) { meta.push("name=?"); vals.push(n); } }
+  if (body.description !== undefined) { meta.push("description=?"); vals.push(body.description.trim() || null); }
+  vals.push(projectId);
+  await env.cloud_memory_db.prepare(`UPDATE projects SET ${meta.join(", ")} WHERE id=?`).bind(...vals).run();
+  const row = await env.cloud_memory_db.prepare("SELECT * FROM projects WHERE id = ?").bind(projectId).first<any>();
+  return jsonResp({ ok: true, project: { id: row.id, name: row.name, description: row.description, updated_at: row.updated_at } });
+}
+
+/** DELETE /projects/:id — delete a project; its workspaces become unsorted (auth required) */
+export async function handleProjectDelete(request: Request, env: Env, projectId: string): Promise<Response> {
+  if (!checkAuth(request, env)) return errResp("Unauthorized", 401, request, env);
+  await ensureProjectTables(env);
+  const existing = await env.cloud_memory_db.prepare("SELECT id FROM projects WHERE id = ?").bind(projectId).first();
+  if (!existing) return errResp("Project not found", 404, request, env);
+  await env.cloud_memory_db.prepare("UPDATE workspaces SET project_id = NULL WHERE project_id = ?").bind(projectId).run();
+  await env.cloud_memory_db.prepare("DELETE FROM projects WHERE id = ?").bind(projectId).run();
+  return jsonResp({ ok: true, unassigned: true });
+}
+
+/** POST /workspace/:id/assign — move a workspace into/out of a project (auth required) */
+export async function handleWsAssign(request: Request, env: Env, wsId: string): Promise<Response> {
+  if (!checkAuth(request, env)) return errResp("Unauthorized", 401, request, env);
+  await ensureProjectTables(env);
+  const existing = await env.cloud_memory_db.prepare("SELECT id FROM workspaces WHERE id = ?").bind(wsId).first();
+  if (!existing) return errResp("Workspace not found", 404, request, env);
+  const body = await request.json<{ project_id?: string | null; agent?: string }>();
+  const projectId = body.project_id || null;
+  if (projectId) {
+    const proj = await env.cloud_memory_db.prepare("SELECT id FROM projects WHERE id = ?").bind(projectId).first();
+    if (!proj) return errResp("Project not found", 404, request, env);
+  }
+  const leaseErr = await requireWriteLease(env, wsId, body.agent || "unknown", request);
+  if (leaseErr) return leaseErr;
+  await env.cloud_memory_db
+    .prepare("UPDATE workspaces SET project_id = ?, updated_at = ? WHERE id = ?")
+    .bind(projectId, Date.now(), wsId)
+    .run();
+  const bundle = await loadBundle(env, wsId);
+  return jsonResp({ ok: true, workspace: bundle });
+}
