@@ -251,6 +251,9 @@ export async function ensureWorkspaceTables(env: Env): Promise<void> {
   try {
     await env.cloud_memory_db.prepare(`ALTER TABLE workspaces ADD COLUMN heartbeat_at INTEGER`).run();
   } catch { /* column already exists */ }
+  try {
+    await env.cloud_memory_db.prepare(`ALTER TABLE workspaces ADD COLUMN client_key TEXT`).run();
+  } catch { /* column already exists */ }
 
   await env.cloud_memory_db.prepare(
     `CREATE INDEX IF NOT EXISTS idx_ws_status ON workspaces(status)`
@@ -383,10 +386,26 @@ export async function handleWsCreate(request: Request, env: Env): Promise<Respon
     label?: string;
     project_id?: string | null;
     state?: Partial<WorkspaceState>;
+    client_key?: string;
   }>();
 
   const name = body.name?.trim();
   if (!name) return errResp("name is required", 400, request, env);
+
+  // Idempotency: if a client_key is provided and a workspace with it already
+  // exists (e.g. two plugin instances racing to materialize the same session),
+  // return the existing workspace instead of creating a duplicate.
+  const clientKey = body.client_key?.trim() || null;
+  if (clientKey) {
+    const existing = await env.cloud_memory_db
+      .prepare("SELECT id FROM workspaces WHERE client_key = ? LIMIT 1")
+      .bind(clientKey)
+      .first();
+    if (existing) {
+      const bundle = await loadBundle(env, existing.id);
+      if (bundle) return jsonResp({ ok: true, created: false, workspace: bundle });
+    }
+  }
 
   const id = generateId();
   const now = Date.now();
@@ -394,10 +413,10 @@ export async function handleWsCreate(request: Request, env: Env): Promise<Respon
   // Insert workspace metadata
   await env.cloud_memory_db
     .prepare(
-      `INSERT INTO workspaces (id, name, label, project_id, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'active', ?, ?)`
+      `INSERT INTO workspaces (id, name, label, project_id, status, created_at, updated_at, client_key)
+       VALUES (?, ?, ?, ?, 'active', ?, ?, ?)`
     )
-    .bind(id, name, body.label || null, body.project_id || null, now, now)
+    .bind(id, name, body.label || null, body.project_id || null, now, now, clientKey)
     .run();
 
   // Insert initial state entries
@@ -1844,6 +1863,13 @@ export async function ensureProjectTables(env: Env): Promise<void> {
   // workspaces.project_id column migration (idempotent)
   try {
     await env.cloud_memory_db.prepare("ALTER TABLE workspaces ADD COLUMN project_id TEXT").run();
+  } catch {
+    // column already exists
+  }
+
+  // workspaces.client_key column migration (idempotency key for client-side auto-capture)
+  try {
+    await env.cloud_memory_db.prepare("ALTER TABLE workspaces ADD COLUMN client_key TEXT").run();
   } catch {
     // column already exists
   }

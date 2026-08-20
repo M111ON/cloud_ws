@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS workspaces (
   next_step_count INTEGER DEFAULT 0,
   created_at INTEGER,
   updated_at INTEGER,
-  last_checkpoint_at INTEGER
+  last_checkpoint_at INTEGER,
+  client_key TEXT
 );
 
 -- Workspace state entries — lossless bundle
