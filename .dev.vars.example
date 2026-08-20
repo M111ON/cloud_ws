@@ -1,0 +1,5 @@
+# API Key for local development
+# Copy this file to .dev.vars and fill in your key
+# NEVER commit .dev.vars to git!
+
+API_KEY="your-secret-api-key-here"

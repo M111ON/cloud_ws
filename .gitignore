@@ -1,0 +1,11 @@
+node_modules/
+.wrangler/
+.dev.vars
+*.log
+build/
+.env
+.api_key
+.ws-manifest.json
+
+__pycache__/
+*.pyc
