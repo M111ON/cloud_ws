@@ -109,6 +109,13 @@ td.cq{max-width:360px;word-break:break-word}
 td.n{white-space:nowrap;text-align:right}
 td .dbtn{padding:3px 9px;font-size:.66rem}
 td .csel{width:auto}
+/* memory search */
+.sres{display:flex;flex-direction:column;gap:10px}
+.sres-item{background:#1a1a1a;border:1px solid #222;border-radius:10px;padding:12px 14px}
+.sres-h{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
+.sres-src{font-size:.68rem;color:#818cf8;word-break:break-all}
+.sres-score{font-size:.66rem;background:#1e1e2e;color:#a0a0ff;padding:2px 8px;border-radius:12px;flex-shrink:0}
+.sres-text{font-size:.8rem;line-height:1.5;color:#ccc;white-space:pre-wrap;word-break:break-word;max-height:280px;overflow-y:auto}
 /* toast + confirm */
 #toasts{position:fixed;bottom:16px;right:16px;display:flex;flex-direction:column;gap:8px;z-index:100}
 .toast{padding:10px 16px;border-radius:10px;font-size:.82rem;box-shadow:0 8px 24px rgba(0,0,0,.5);animation:tin .2s ease;max-width:320px}
@@ -155,6 +162,7 @@ td .csel{width:auto}
   <div class="tabs">
     <div class="tab ac" onclick="showTab(0)">Pool</div>
     <div class="tab" onclick="showTab(1)">Query Cache</div>
+    <div class="tab" onclick="showTab(2)">&#128269; Search</div>
     <div style="flex:1"></div>
     <button class="sec" style="padding:4px 10px;font-size:.7rem" onclick="toggleKbar()">&#9881; API Key</button>
   </div>
@@ -197,6 +205,16 @@ td .csel{width:auto}
       </tr></thead>
       <tbody></tbody>
     </table>
+  </div>
+
+  <div id="p2" class="p">
+    <div class="tb">
+      <input type="text" id="mQuery" placeholder="&#128269; Search memories..." onkeydown="if(event.key==='Enter')doMemSearch()">
+      <button onclick="doMemSearch()">Search</button>
+      <button class="sec" onclick="clearMemSearch()">Clear</button>
+    </div>
+    <div id="mStatus" class="cstats"></div>
+    <div id="mResults" class="sres"></div>
   </div>
 
   <div class="help">
@@ -328,8 +346,32 @@ function showTab(i){
   var ps=document.querySelectorAll('.p');
   for(var k=0;k<ps.length;k++)ps[k].className='p'+(k===i?' ac':'');
   if(i===1)loadCache();
+  if(i===2)setTimeout(function(){var q=$('mQuery');if(q)q.focus();},50);
 }
 function toggleKbar(){var b=$('kbar');b.style.display=b.style.display==='none'?'flex':'none';}
+
+// ── Memory search ──
+async function doMemSearch(){
+  var q=($('mQuery').value||'').trim();
+  if(!q)return toast('Type a query',false);
+  var st=$('mStatus'),rs=$('mResults');
+  st.innerHTML='<span class="ld">Searching...</span>';
+  rs.innerHTML='';
+  try{
+    var r=await fetch(W+'/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:q,k:8})});
+    var d=await r.json();
+    if(!r.ok)throw new Error(d.error||r.status);
+    var res=d.results||[];
+    st.innerHTML=res.length+' results'+(d.cached?' (cached)':'');
+    rs.innerHTML=res.map(function(h){
+      var src=esc(h.source_file||'');
+      var sc=h.score!=null?String(h.score.toFixed(3)):'';
+      var body=esc((h.context||h.text||'').substring(0,2000));
+      return '<div class="sres-item"><div class="sres-h"><span class="sres-src">'+src+'</span><span class="sres-score">'+sc+'</span></div><div class="sres-text">'+body+'</div></div>';
+    }).join('');
+  }catch(e){st.innerHTML='<span class="er">Error: '+esc(e.message)+'</span>';}
+}
+function clearMemSearch(){$('mQuery').value='';$('mStatus').innerHTML='';$('mResults').innerHTML='';$('mQuery').focus();}
 
 // ── API key ──
 function doSaveKey(){var k=$('akey').value.trim();if(!k)return toast('Key empty',false);localStorage.setItem('CF_MEMORY_KEY',k);toast('Key saved',true);}
