@@ -1179,7 +1179,7 @@ export async function handleWsFeedbackSummary(
   request: Request,
   env: Env
 ): Promise<Response> {
-  if (!checkAuth(request, env)) return errResp("Unauthorized", 401, request, env);
+  // Read-only endpoint — no auth required
 
   const url = new URL(request.url);
   const wsId = url.searchParams.get("workspace_id");
