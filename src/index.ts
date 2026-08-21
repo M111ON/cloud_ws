@@ -1491,7 +1491,7 @@ function handleWebUI(): Response {
 <body>
 <div class="container">
   <h1>Cloud Memory</h1>
-  <p class="subtitle">Semantic search across 303 chat sessions &middot; 12,139 chunks</p>
+  <p class="subtitle" id="subtitle">Semantic search across chat sessions</p>
   <div class="search-box">
     <input type="text" id="query" placeholder="Search your memories..." />
     <button id="searchBtn" onclick="doSearch()">Search</button>
@@ -1506,6 +1506,10 @@ function handleWebUI(): Response {
   const rs = document.getElementById('results');
   const btn = document.getElementById('searchBtn');
   q.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+  // Load stats dynamically
+  fetch(W + '/status').then(r => r.json()).then(d => {
+    document.getElementById('subtitle').textContent = 'Semantic search across ' + (d.chunks || 0).toLocaleString() + ' chunks';
+  }).catch(() => {});
 
   async function doSearch() {
     const query = q.value.trim();
@@ -1537,7 +1541,7 @@ function handleWebUI(): Response {
 </body>
 </html>`;
   return new Response(html, {
-    headers: { "Content-Type": "text/html; charset=utf-8", ...(request ? corsHeaders(request, env) : corsHeadersAny()) },
+    headers: { "Content-Type": "text/html; charset=utf-8", ...corsHeadersAny() },
   });
 }
 
