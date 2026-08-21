@@ -5,20 +5,26 @@ ws_sync.py — Cross-machine workspace sync.
 Pull workspace state from cloud to local, push local changes back.
 Enables resuming work on any machine by syncing workspace bundles.
 
-Usage:
-    python ws_sync.py list                         # list active workspaces
-    python ws_sync.py pull <workspace_id> [dir]    # pull to local directory
-    python ws_sync.py push <dir>                   # push local changes back
-    python ws_sync.py diff <dir>                   # diff local vs cloud
-    python ws_sync.py checkpoint <dir> [message]   # checkpoint and optionally archive
-    python ws_sync.py status                       # pool status summary
-    python ws_sync.py create <name> [dir]          # create new workspace + pull
+Usage (8 commands):
+    python ws_sync.py list                              # list active workspaces
+    python ws_sync.py create <name> [dir]               # create new workspace
+    python ws_sync.py status                            # pool status summary
+    python ws_sync.py sync pull <workspace_id> [dir]    # pull to local directory
+    python ws_sync.py sync push <dir>                   # push local changes back
+    python ws_sync.py sync diff <dir>                   # diff local vs cloud
+    python ws_sync.py checkpoint <dir> [message]        # checkpoint + archive
+    python ws_sync.py lifecycle heartbeat <dir>         # send heartbeat
+    python ws_sync.py lifecycle claim <dir>             # claim exclusive access
+    python ws_sync.py lifecycle release <dir>           # release claim
+    python ws_sync.py lifecycle stale-detect            # find stale workspaces
+    python ws_sync.py delete <workspace_id>             # permanently delete
+    python ws_sync.py search <workspace_id> <query>     # search workspace state
 
 Examples:
     python ws_sync.py list
-    python ws_sync.py pull ws-abc123 ./my-workspace
-    python ws_sync.py push ./my-workspace
-    python ws_sync.py diff ./my-workspace
+    python ws_sync.py sync pull ws-abc123 ./my-workspace
+    python ws_sync.py sync push ./my-workspace
+    python ws_sync.py sync diff ./my-workspace
     python ws_sync.py checkpoint ./my-workspace "Completed phase 1"
     python ws_sync.py create "DWGLS-refactor" ./dwgls
 """
@@ -96,6 +102,23 @@ def compute_local_hash(local_dir: Path) -> str:
         h.update(rel.encode())
         h.update(f.read_bytes())
     return h.hexdigest()[:16]
+
+# ─── Auto-heartbeat helper ───────────────────────────────────────────────
+
+def _auto_heartbeat(local_dir: Path, api_url: str) -> None:
+    """Send heartbeat after sync operations to keep workspace alive."""
+    manifest = load_manifest(local_dir)
+    if not manifest:
+        return
+    ws_id = manifest.get("workspace_id", "")
+    if not ws_id:
+        return
+    agent = os.environ.get("WS_AGENT", os.environ.get("COMPUTERNAME", "cli"))
+    try:
+        api_post(f"/workspace/{ws_id}/heartbeat", {"agent": agent}, "", api_url)
+    except Exception:
+        pass  # Non-fatal: heartbeat is best-effort
+
 
 # ─── Commands ──────────────────────────────────────────────────────────────
 
@@ -198,6 +221,10 @@ def cmd_pull(args):
     print(f"\n✅ Pulled workspace '{ws.get('name', ws_id)}' to {local_dir}/")
     print(f"   Files: {len(files)}, Variables: {len(variables)}, "
           f"Decisions: {len(decisions)}, Next steps: {len(next_steps)}")
+
+    # Auto-heartbeat: keep workspace alive after pull
+    _auto_heartbeat(local_dir, api_url)
+
     return 0
 
 
@@ -282,6 +309,10 @@ def cmd_push(args):
     print(f"\n✅ Pushed to workspace '{ws.get('name', ws_id)}'")
     print(f"   Files: {len(files)}, Variables: {len(state.get('variables', {}))}, "
           f"Decisions: {len(state.get('decisions', {}))}, Next steps: {len(state.get('next_steps', []))}")
+
+    # Auto-heartbeat: keep workspace alive after push
+    _auto_heartbeat(local_dir, api_url)
+
     return 0
 
 
@@ -423,9 +454,7 @@ def cmd_checkpoint(args):
     print(f"\n✅ Checkpoint #{cp.get('seq')} created")
     print(f"   ID: {cp.get('id')}")
     print(f"   Checksum: {cp.get('checksum')}")
-    print(f"   Snapshot size: {cp.get('snapshot_size', 0)} bytes")
-
-    # Archive if requested
+    print(f"   Snapshot size: {cp.get('snapshot_size', 0)} bytes")    # Archive if requested
     if args.archive:
         print(f"\nArchiving workspace {ws_id}...")
         archive_data = api_post(f"/workspace/{ws_id}/archive", {}, api_key, api_url)
@@ -434,8 +463,10 @@ def cmd_checkpoint(args):
         else:
             print(f"Error archiving: {archive_data.get('error')}")
 
-    return 0
+    # Auto-heartbeat: keep workspace alive after checkpoint
+    _auto_heartbeat(local_dir, api_url)
 
+    return 0
 
 def cmd_create(args):
     """Create a new workspace and optionally pull it locally."""
@@ -655,28 +686,11 @@ def main():
     )
     sub = parser.add_subparsers(dest="command", help="Command to run")
 
+    # ─── Core commands (top-level) ─────────────────────────────
+
     # list
     p_list = sub.add_parser("list", help="List active workspaces")
     p_list.add_argument("--status", default="active", help="Filter by status (active/paused/archived/all)")
-
-    # pull
-    p_pull = sub.add_parser("pull", help="Pull workspace to local directory")
-    p_pull.add_argument("workspace_id", help="Workspace ID")
-    p_pull.add_argument("dir", nargs="?", help="Local directory (default: ./<workspace_id>)")
-
-    # push
-    p_push = sub.add_parser("push", help="Push local changes to cloud")
-    p_push.add_argument("dir", help="Local directory with .ws-manifest.json")
-
-    # diff
-    p_diff = sub.add_parser("diff", help="Diff local vs cloud state")
-    p_diff.add_argument("dir", help="Local directory with .ws-manifest.json")
-
-    # checkpoint
-    p_cp = sub.add_parser("checkpoint", help="Checkpoint workspace state")
-    p_cp.add_argument("dir", help="Local directory with .ws-manifest.json")
-    p_cp.add_argument("message", nargs="?", help="Checkpoint message (fact summary)")
-    p_cp.add_argument("--archive", action="store_true", help="Archive after checkpoint")
 
     # create
     p_create = sub.add_parser("create", help="Create new workspace")
@@ -687,23 +701,11 @@ def main():
     # status
     sub.add_parser("status", help="Show pool status summary")
 
-    # heartbeat
-    p_hb = sub.add_parser("heartbeat", help="Send heartbeat for workspace")
-    p_hb.add_argument("dir", help="Local directory with .ws-manifest.json")
-    p_hb.add_argument("--agent", help="Agent/machine identifier")
-
-    # claim
-    p_claim = sub.add_parser("claim", help="Claim workspace for exclusive use")
-    p_claim.add_argument("dir", help="Local directory with .ws-manifest.json")
-    p_claim.add_argument("--agent", help="Agent/machine identifier")
-
-    # release
-    p_rel = sub.add_parser("release", help="Release claim on workspace")
-    p_rel.add_argument("dir", help="Local directory with .ws-manifest.json")
-    p_rel.add_argument("--agent", help="Agent/machine identifier")
-
-    # stale-detect
-    sub.add_parser("stale-detect", help="Find and auto-pause stale workspaces")
+    # checkpoint
+    p_cp = sub.add_parser("checkpoint", help="Checkpoint workspace state")
+    p_cp.add_argument("dir", help="Local directory with .ws-manifest.json")
+    p_cp.add_argument("message", nargs="?", help="Checkpoint message (fact summary)")
+    p_cp.add_argument("--archive", action="store_true", help="Archive after checkpoint")
 
     # delete
     p_del = sub.add_parser("delete", help="Permanently delete a workspace")
@@ -715,24 +717,102 @@ def main():
     p_search.add_argument("query", help="Search query (substring match)")
     p_search.add_argument("-k", type=int, default=10, help="Max results (default 10)")
 
+    # ─── Grouped: sync (push/pull/diff) ────────────────────────
+    p_sync = sub.add_parser("sync", help="Sync workspace state (push/pull/diff)")
+    sync_sub = p_sync.add_subparsers(dest="sync_action", help="Sync action")
+
+    p_sync_pull = sync_sub.add_parser("pull", help="Pull workspace from cloud to local")
+    p_sync_pull.add_argument("workspace_id", help="Workspace ID")
+    p_sync_pull.add_argument("dir", nargs="?", help="Local directory (default: ./<workspace_id>)")
+
+    p_sync_push = sync_sub.add_parser("push", help="Push local changes to cloud")
+    p_sync_push.add_argument("dir", help="Local directory with .ws-manifest.json")
+
+    p_sync_diff = sync_sub.add_parser("diff", help="Diff local vs cloud state")
+    p_sync_diff.add_argument("dir", help="Local directory with .ws-manifest.json")
+
+    # ─── Grouped: lifecycle (heartbeat/claim/release/stale-detect) ──
+    p_lifecycle = sub.add_parser("lifecycle", help="Workspace lifecycle (heartbeat/claim/release/stale-detect)")
+    lc_sub = p_lifecycle.add_subparsers(dest="lifecycle_action", help="Lifecycle action")
+
+    p_lc_hb = lc_sub.add_parser("heartbeat", help="Send heartbeat for workspace")
+    p_lc_hb.add_argument("dir", help="Local directory with .ws-manifest.json")
+    p_lc_hb.add_argument("--agent", help="Agent/machine identifier")
+
+    p_lc_claim = lc_sub.add_parser("claim", help="Claim workspace for exclusive use")
+    p_lc_claim.add_argument("dir", help="Local directory with .ws-manifest.json")
+    p_lc_claim.add_argument("--agent", help="Agent/machine identifier")
+
+    p_lc_rel = lc_sub.add_parser("release", help="Release claim on workspace")
+    p_lc_rel.add_argument("dir", help="Local directory with .ws-manifest.json")
+    p_lc_rel.add_argument("--agent", help="Agent/machine identifier")
+
+    lc_sub.add_parser("stale-detect", help="Find and auto-pause stale workspaces")
+
+    # ─── Deprecated aliases (still work, but warn) ─────────────
+    DEPRECATED_ALIASES = {
+        "push": ("sync", cmd_push),
+        "pull": ("sync", cmd_pull),
+        "diff": ("sync", cmd_diff),
+        "heartbeat": ("lifecycle", cmd_heartbeat),
+        "claim": ("lifecycle", cmd_claim),
+        "release": ("lifecycle", cmd_release),
+        "stale-detect": ("lifecycle", cmd_stale_detect),
+    }
+    for alias, (group, _handler) in DEPRECATED_ALIASES.items():
+        p_dep = sub.add_parser(alias, help=f"[DEPRECATED] Use: ws {group} {alias}")
+        # Re-use the same arguments as the grouped version
+        if alias in ("push", "diff"):
+            p_dep.add_argument("dir", help="Local directory with .ws-manifest.json")
+        elif alias == "pull":
+            p_dep.add_argument("workspace_id", help="Workspace ID")
+            p_dep.add_argument("dir", nargs="?", help="Local directory (default: ./<workspace_id>)")
+        elif alias in ("heartbeat", "claim", "release"):
+            p_dep.add_argument("dir", help="Local directory with .ws-manifest.json")
+            p_dep.add_argument("--agent", help="Agent/machine identifier")
+        elif alias == "stale-detect":
+            pass  # no args
+
     args = parser.parse_args()
 
     if not args.command:
         parser.print_help()
         return 1
 
+    # ─── Route to handler ──────────────────────────────────────
+    if args.command in DEPRECATED_ALIASES:
+        _group, handler = DEPRECATED_ALIASES[args.command]
+        print(f"\033[33m⚠  '{args.command}' is deprecated. Use 'ws {_group} {args.command}' instead.\033[0m", file=sys.stderr)
+        return handler(args)
+
+    if args.command == "sync":
+        sync_handlers = {
+            "pull": cmd_pull,
+            "push": cmd_push,
+            "diff": cmd_diff,
+        }
+        if not args.sync_action:
+            p_sync.print_help()
+            return 1
+        return sync_handlers[args.sync_action](args)
+
+    if args.command == "lifecycle":
+        lc_handlers = {
+            "heartbeat": cmd_heartbeat,
+            "claim": cmd_claim,
+            "release": cmd_release,
+            "stale-detect": cmd_stale_detect,
+        }
+        if not args.lifecycle_action:
+            p_lifecycle.print_help()
+            return 1
+        return lc_handlers[args.lifecycle_action](args)
+
     commands = {
         "list": cmd_list,
-        "pull": cmd_pull,
-        "push": cmd_push,
-        "diff": cmd_diff,
         "checkpoint": cmd_checkpoint,
         "create": cmd_create,
         "status": cmd_status,
-        "heartbeat": cmd_heartbeat,
-        "claim": cmd_claim,
-        "release": cmd_release,
-        "stale-detect": cmd_stale_detect,
         "delete": cmd_delete,
         "search": cmd_search,
     }

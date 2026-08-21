@@ -264,6 +264,94 @@ export async function ensureWorkspaceTables(env: Env): Promise<void> {
   await env.cloud_memory_db.prepare(
     `CREATE INDEX IF NOT EXISTS idx_ws_ckpt_ws ON workspace_checkpoints(workspace_id)`
   ).run();
+
+  // Feedback table
+  await env.cloud_memory_db.prepare(`
+    CREATE TABLE IF NOT EXISTS workspace_feedback (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT,
+      rating INTEGER NOT NULL,
+      category TEXT DEFAULT 'general',
+      comment TEXT,
+      agent TEXT,
+      created_at INTEGER
+    )
+  `).run();
+  await env.cloud_memory_db.prepare(
+    `CREATE INDEX IF NOT EXISTS idx_feedback_ws ON workspace_feedback(workspace_id)`
+  ).run();
+  await env.cloud_memory_db.prepare(
+    `CREATE INDEX IF NOT EXISTS idx_feedback_created ON workspace_feedback(created_at)`
+  ).run();
+}
+
+// ─── Workspace Templates ────────────────────────────────────────────────
+
+type TemplateName = 'blank' | 'project' | 'research' | 'meeting';
+
+const TEMPLATES: Record<TemplateName, Partial<WorkspaceState>> = {
+  blank: {},
+
+  project: {
+    variables: {
+      language: '',
+      framework: '',
+      repository: '',
+      status: 'planning',
+    },
+    decisions: {
+      'arch-001': 'Architecture: (describe approach)',
+    },
+    next_steps: [
+      'Define project scope and requirements',
+      'Set up development environment',
+      'Implement core functionality',
+      'Write tests',
+      'Deploy and verify',
+    ],
+    context: 'Project workspace — update variables and next_steps as work progresses.',
+  },
+
+  research: {
+    variables: {
+      topic: '',
+      methodology: '',
+      status: 'literature-review',
+    },
+    decisions: {
+      'method-001': 'Methodology: (describe approach)',
+    },
+    next_steps: [
+      'Literature review',
+      'Define research questions',
+      'Design methodology',
+      'Collect data',
+      'Analyze results',
+      'Write findings',
+    ],
+    context: 'Research workspace — track sources, methodology, and findings.',
+  },
+
+  meeting: {
+    variables: {
+      date: new Date().toISOString().slice(0, 10),
+      attendees: '',
+      organizer: '',
+    },
+    decisions: {},
+    next_steps: [
+      'Review agenda',
+      'Discuss key topics',
+      'Record decisions',
+      'Assign action items',
+    ],
+    context: 'Meeting workspace — capture decisions and action items.',
+  },
+};
+
+function getTemplate(name: string | undefined): Partial<WorkspaceState> {
+  if (!name || name === 'blank') return {};
+  return TEMPLATES[name as TemplateName] || {};
 }
 
 // ─── Fact extraction from workspace state ────────────────────────────────
@@ -384,6 +472,7 @@ export async function handleWsCreate(request: Request, env: Env): Promise<Respon
   const body = await request.json<{
     name?: string;
     label?: string;
+    template?: string;
     project_id?: string | null;
     state?: Partial<WorkspaceState>;
     client_key?: string;
@@ -419,8 +508,15 @@ export async function handleWsCreate(request: Request, env: Env): Promise<Respon
     .bind(id, name, body.label || null, body.project_id || null, now, now, clientKey)
     .run();
 
-  // Insert initial state entries
-  const state = body.state || {};
+  // Merge template defaults with provided state
+  const template = getTemplate(body.template);
+  const state: Partial<WorkspaceState> = {
+    files: { ...template.files, ...body.state?.files },
+    variables: { ...template.variables, ...body.state?.variables },
+    decisions: { ...template.decisions, ...body.state?.decisions },
+    next_steps: body.state?.next_steps || template.next_steps,
+    context: body.state?.context || template.context,
+  };
   const statements: D1Statement[] = [];
 
   if (state.files) {
@@ -803,59 +899,35 @@ export async function handleWsCheckpoint(
   const facts = extractFactsFromState(bundle.state, bundle.name, wsId);
   let factsPushed = 0;
   if (facts.length > 0) {
-    try {
-      // Embed all facts in one batch
-      const embeddingResponse: any = await env.AI.run("@cf/baai/bge-m3", {
-        text: facts.join("\n---\n"),
-      });
-      let allVectors: number[][] = [];
-      if (Array.isArray(embeddingResponse?.data?.[0])) {
-        if (typeof embeddingResponse.data[0][0] === "number") {
-          // Single embedding for all facts combined — split later
-          // Actually, bge-m3 processes each text separately
-          allVectors = embeddingResponse.data.map((d: any) => d.embedding || d);
-        } else {
-          allVectors = embeddingResponse.data.map((d: any) => d.embedding || d);
-        }
-      }
-
-      // If we got fewer vectors than facts, embed individually
-      if (allVectors.length < facts.length) {
-        allVectors = [];
-        for (const fact of facts) {
-          const resp: any = await env.AI.run("@cf/baai/bge-m3", { text: fact });
-          const vec = resp?.data?.[0]?.embedding || resp?.data?.[0];
-          if (Array.isArray(vec)) allVectors.push(vec);
-        }
-      }
-
-      // Insert facts as memory chunks
-      const stmt = env.cloud_memory_db.prepare(
-        "INSERT OR REPLACE INTO chunks (id, source_file, chunk_index, text) VALUES (?, ?, ?, ?)"
-      );
-      const statements: D1Statement[] = [];
-      const vectors: { id: string; values: number[]; namespace: string }[] = [];
-
-      for (let i = 0; i < facts.length; i++) {
-        const factId = `ws-fact/${wsId}/${cpId}_${i}`;
+    // Embed + store each fact individually (proven pattern from memory_remember).
+    // Vectorize IDs must be ≤64 bytes — use short prefix.
+    for (let i = 0; i < facts.length; i++) {
+      try {
+        const factId = `wsf/${wsId.slice(0,8)}/${seq}_${i}`;
         const factSource = `ws-fact/${bundle.name}/checkpoint-${seq}`;
-        statements.push(stmt.bind(factId, factSource, i, facts[i]));
-        if (allVectors[i]) {
-          vectors.push({ id: factId, values: allVectors[i], namespace: "ws-fact" });
+
+        // Embed this fact
+        const embeddingResponse: any = await env.AI.run("@cf/baai/bge-m3", { text: facts[i] });
+        const vec = embeddingResponse?.data?.[0]?.embedding || embeddingResponse?.data?.[0];
+        if (!Array.isArray(vec)) {
+          console.error(`Fact ${i} embedding failed: no vector returned`);
+          continue;
         }
-      }
 
-if (statements.length > 0) {
-    await env.cloud_memory_db.batch(statements);
-  }
+        // Insert into D1 chunks
+        await env.cloud_memory_db
+          .prepare("INSERT OR REPLACE INTO chunks (id, source_file, chunk_index, text) VALUES (?, ?, ?, ?)")
+          .bind(factId, factSource, i, facts[i])
+          .run();
 
-      if (vectors.length > 0) {
-        await env.VECTORIZE.upsert(vectors);
+        // Upsert into Vectorize
+        await env.VECTORIZE.upsert([{ id: factId, values: vec, namespace: "ws-fact" }]);
+
+        factsPushed++;
+      } catch (e) {
+        // Non-fatal: continue with remaining facts
+        console.error(`Fact ${i} extraction failed:`, e);
       }
-      factsPushed = facts.length;
-    } catch (e) {
-      // Non-fatal: checkpoint succeeded, fact extraction is best-effort
-      console.error("Fact extraction failed:", e);
     }
   }
 
@@ -1001,6 +1073,180 @@ export async function handleWsSearch(
     query: q,
     results: results.slice(0, k),
     total: results.length,
+  });
+}
+
+// ─── Feedback ──────────────────────────────────────────────────────────
+
+/**
+ * POST /workspace/feedback
+ * Body: { workspace_id?: string, rating: 1-5, category?: string, comment?: string, agent?: string }
+ * Collects user/agent feedback on workspace experience.
+ */
+export async function handleWsFeedback(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  if (!checkAuth(request, env)) return errResp("Unauthorized", 401, request, env);
+
+  const body = await request.json<{
+    workspace_id?: string;
+    rating: number;
+    category?: string;
+    comment?: string;
+    agent?: string;
+  }>();
+
+  const rating = Math.round(body.rating);
+  if (rating < 1 || rating > 5) {
+    return errResp("rating must be 1-5", 400, request, env);
+  }
+
+  const id = generateId();
+  const now = Date.now();
+  const category = (body.category || "general").trim().slice(0, 50);
+  const comment = (body.comment || "").trim().slice(0, 2000);
+  const agent = (body.agent || "").trim().slice(0, 100);
+  const wsId = body.workspace_id?.trim() || null;
+
+  await env.cloud_memory_db
+    .prepare(
+      `INSERT INTO workspace_feedback (id, workspace_id, rating, category, comment, agent, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .bind(id, wsId, rating, category, comment || null, agent || null, now)
+    .run();
+
+  return jsonResp({ ok: true, id, rating, category, created_at: now });
+}
+
+/**
+ * GET /workspace/feedback
+ * Query: ?workspace_id=...&limit=50
+ * List recent feedback entries (admin).
+ */
+export async function handleWsFeedbackList(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  if (!checkAuth(request, env)) return errResp("Unauthorized", 401, request, env);
+
+  const url = new URL(request.url);
+  const wsId = url.searchParams.get("workspace_id");
+  const limit = Math.min(parseInt(url.searchParams.get("limit") || "50"), 200);
+
+  let query = "SELECT * FROM workspace_feedback";
+  const params: any[] = [];
+  if (wsId) {
+    query += " WHERE workspace_id = ?";
+    params.push(wsId);
+  }
+  query += " ORDER BY created_at DESC LIMIT ?";
+  params.push(limit);
+
+  const rows = params.length > 0
+    ? await env.cloud_memory_db.prepare(query).bind(...params).all<any>()
+    : await env.cloud_memory_db.prepare(query).all<any>();
+
+  const entries = (rows.results || []).map((r) => ({
+    id: r.id,
+    workspace_id: r.workspace_id,
+    rating: r.rating,
+    category: r.category,
+    comment: r.comment,
+    agent: r.agent,
+    created_at: r.created_at,
+  }));
+
+  // Compute summary stats
+  const ratings = entries.map((e) => e.rating);
+  const avgRating = ratings.length > 0 ? ratings.reduce((a, b) => a + b, 0) / ratings.length : 0;
+
+  return jsonResp({
+    ok: true,
+    count: entries.length,
+    avg_rating: Math.round(avgRating * 10) / 10,
+    entries,
+  });
+}
+
+/**
+ * GET /workspace/feedback/summary
+ * Query: ?workspace_id=...&days=30
+ * Aggregated feedback stats: avg rating, count by category, daily trend.
+ */
+export async function handleWsFeedbackSummary(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  if (!checkAuth(request, env)) return errResp("Unauthorized", 401, request, env);
+
+  const url = new URL(request.url);
+  const wsId = url.searchParams.get("workspace_id");
+  const days = Math.min(parseInt(url.searchParams.get("days") || "30"), 365);
+  const cutoff = Date.now() - days * 24 * 3600 * 1000;
+
+  // Build WHERE clause
+  let where = "WHERE created_at >= ?";
+  const params: any[] = [cutoff];
+  if (wsId) {
+    where += " AND workspace_id = ?";
+    params.push(wsId);
+  }
+
+  // Overall stats
+  const overall = await env.cloud_memory_db
+    .prepare(`SELECT COUNT(*) as count, AVG(rating) as avg_rating, MIN(rating) as min_rating, MAX(rating) as max_rating FROM workspace_feedback ${where}`)
+    .bind(...params)
+    .first<{ count: number; avg_rating: number; min_rating: number; max_rating: number }>();
+
+  // Count by category
+  const catRows = await env.cloud_memory_db
+    .prepare(`SELECT category, COUNT(*) as count, AVG(rating) as avg_rating FROM workspace_feedback ${where} GROUP BY category ORDER BY count DESC`)
+    .bind(...params)
+    .all<{ category: string; count: number; avg_rating: number }>();
+
+  // Daily trend (last N days)
+  const trendRows = await env.cloud_memory_db
+    .prepare(`
+      SELECT (created_at / 86400000) * 86400000 as day,
+             COUNT(*) as count,
+             AVG(rating) as avg_rating
+      FROM workspace_feedback ${where}
+      GROUP BY day ORDER BY day ASC
+    `)
+    .bind(...params)
+    .all<{ day: number; count: number; avg_rating: number }>();
+
+  // Rating distribution
+  const distRows = await env.cloud_memory_db
+    .prepare(`SELECT rating, COUNT(*) as count FROM workspace_feedback ${where} GROUP BY rating ORDER BY rating`)
+    .bind(...params)
+    .all<{ rating: number; count: number }>();
+
+  const distribution: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+  for (const r of distRows.results || []) {
+    distribution[r.rating] = r.count;
+  }
+
+  return jsonResp({
+    ok: true,
+    days,
+    total: overall?.count || 0,
+    avg_rating: overall?.count ? Math.round((overall.avg_rating || 0) * 10) / 10 : 0,
+    min_rating: overall?.min_rating || 0,
+    max_rating: overall?.max_rating || 0,
+    by_category: (catRows.results || []).map((r) => ({
+      category: r.category,
+      count: r.count,
+      avg_rating: Math.round((r.avg_rating || 0) * 10) / 10,
+    })),
+    trend: (trendRows.results || []).map((r) => ({
+      day: r.day,
+      count: r.count,
+      avg_rating: Math.round((r.avg_rating || 0) * 10) / 10,
+    })),
+    distribution,
   });
 }
 

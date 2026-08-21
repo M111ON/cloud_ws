@@ -9,6 +9,9 @@ import {
   handleWsCheckpoints,
   handleWsDelete,
   handleWsSearch,
+  handleWsFeedback,
+  handleWsFeedbackList,
+  handleWsFeedbackSummary,
   handleWorkspaceDashboard,
   handleWsHeartbeat,
   handleWsClaim,
@@ -581,33 +584,38 @@ const MCP_TOOLS = [
   {
     name: "ws_create",
     description:
-      "Create a new workspace. A workspace is an ACTIVE unit of work with lossless state (files, variables, decisions, next_steps). Unlike memory (passive, retrieval-based), workspace = loaded state, no search needed. Use when starting a new project/task that needs continuity across sessions.",
+      "Create a new workspace. Optionally apply a template (blank, project, research, meeting) for pre-filled variables, decisions, and next_steps. Use when starting a new project/task that needs continuity across sessions.",
     inputSchema: {
       type: "object",
       properties: {
         name: { type: "string", description: "Workspace name (e.g. 'ตู้ปลา', 'DWGLS-refactor')" },
         label: { type: "string", description: "Optional category tag" },
+        template: {
+          type: "string",
+          enum: ["blank", "project", "research", "meeting"],
+          description: "Workspace template: blank (empty), project (dev project), research (research tracking), meeting (meeting notes). Default: blank",
+        },
         files: {
           type: "object",
-          description: "Initial files: { path: content }",
+          description: "Initial files: { path: content } (merged with template)",
           additionalProperties: { type: "string" },
         },
         variables: {
           type: "object",
-          description: "Initial variables: { key: value }",
+          description: "Initial variables: { key: value } (merged with template)",
           additionalProperties: { type: "string" },
         },
         decisions: {
           type: "object",
-          description: "Initial decisions: { id: description }",
+          description: "Initial decisions: { id: description } (merged with template)",
           additionalProperties: { type: "string" },
         },
         next_steps: {
           type: "array",
           items: { type: "string" },
-          description: "Ordered list of next steps",
+          description: "Ordered list of next steps (overrides template if provided)",
         },
-        context: { type: "string", description: "General context/notes" },
+        context: { type: "string", description: "General context/notes (overrides template if provided)" },
         api_key: { type: "string", description: "API key for write access (required)" },
       },
       required: ["name", "api_key"],
@@ -787,6 +795,27 @@ const MCP_TOOLS = [
         k: { type: "number", description: "Max results (default 10, max 50)" },
       },
       required: ["workspace_id", "q"],
+    },
+  },
+  {
+    name: "ws_feedback",
+    description:
+      "Submit, list, or summarize feedback on workspace experience (1-5 rating). Modes: submit (pass rating), list (pass list:true), summary (pass summary:true for aggregated stats by category and daily trend). Requires api_key for submitting.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace_id: { type: "string", description: "Workspace ID (optional, filters by workspace)" },
+        rating: { type: "number", description: "Rating 1-5 (1=poor, 5=excellent) — required for submit mode" },
+        category: { type: "string", description: "Feedback category: 'usability', 'performance', 'bug', 'feature', 'general' (default: 'general')" },
+        comment: { type: "string", description: "Free-text comment (max 2000 chars)" },
+        agent: { type: "string", description: "Agent/machine identifier" },
+        api_key: { type: "string", description: "API key for write access (required to submit)" },
+        list: { type: "boolean", description: "If true, list recent feedback entries" },
+        summary: { type: "boolean", description: "If true, return aggregated stats: avg rating, count by category, daily trend, rating distribution" },
+        days: { type: "number", description: "Number of days to include in summary (default 30, max 365)" },
+        limit: { type: "number", description: "Max entries when listing (default 50, max 200)" },
+      },
+      required: [],
     },
   },
 
@@ -1038,6 +1067,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
               body: JSON.stringify({
                 name,
                 label: args.label || undefined,
+                template: args.template || undefined,
                 state: {
                   files: args.files || undefined,
                   variables: args.variables || undefined,
@@ -1266,6 +1296,56 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
               body: JSON.stringify({ q, k: args.k || undefined }),
             });
             const resp = await handleWsSearch(fakeReq, env, wsId);
+            const data = await resp.json();
+            return mcpJsonResponse(id, {
+              content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+            });
+          }
+
+          case "ws_feedback": {
+            await ensureWorkspaceTables(env);
+            if (args.summary) {
+              // Summary mode: GET /workspace/feedback/summary
+              const params = new URLSearchParams();
+              if (args.workspace_id) params.set('workspace_id', args.workspace_id);
+              if (args.days) params.set('days', String(args.days));
+              const fakeReq = new Request(`https://ws/feedback/summary?${params.toString()}`);
+              const resp = await handleWsFeedbackSummary(fakeReq, env);
+              const data = await resp.json();
+              return mcpJsonResponse(id, {
+                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+              });
+            }
+            if (args.list) {
+              // List mode: GET /workspace/feedback
+              const fakeReq = new Request(`https://ws/feedback?limit=${args.limit || 50}${args.workspace_id ? '&workspace_id=' + args.workspace_id : ''}`);
+              const resp = await handleWsFeedbackList(fakeReq, env);
+              const data = await resp.json();
+              return mcpJsonResponse(id, {
+                content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+              });
+            }
+            // Submit mode: POST /workspace/feedback
+            const apiKey = String(args.api_key || "") || mcpKey;
+            if (apiKey !== env.API_KEY) {
+              return mcpErrorResponse(id, -32603, "Invalid API key — write access denied");
+            }
+            const rating = Number(args.rating);
+            if (!rating || rating < 1 || rating > 5) {
+              return mcpErrorResponse(id, -32602, "ws_feedback requires 'rating' (1-5)");
+            }
+            const fakeReq = new Request("https://ws/feedback", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+              body: JSON.stringify({
+                workspace_id: args.workspace_id || undefined,
+                rating,
+                category: args.category || undefined,
+                comment: args.comment || undefined,
+                agent: args.agent || undefined,
+              }),
+            });
+            const resp = await handleWsFeedback(fakeReq, env);
             const data = await resp.json();
             return mcpJsonResponse(id, {
               content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -1514,6 +1594,24 @@ export default {
           await ensureWorkspaceTables(env);
           return await handleWsCreate(request, env);
 
+        case "/workspace/feedback":
+          if (request.method === "POST") {
+            await ensureWorkspaceTables(env);
+            return await handleWsFeedback(request, env);
+          }
+          if (request.method === "GET") {
+            await ensureWorkspaceTables(env);
+            return await handleWsFeedbackList(request, env);
+          }
+          return new Response("Method not allowed", { status: 405, headers: corsHeaders(request, env) });
+
+        case "/workspace/feedback/summary":
+          if (request.method === "GET") {
+            await ensureWorkspaceTables(env);
+            return await handleWsFeedbackSummary(request, env);
+          }
+          return new Response("Method not allowed", { status: 405, headers: corsHeaders(request, env) });
+
         case "/workspace/list":
           await ensureWorkspaceTables(env);
           return await handleWsList(request, env);
@@ -1615,6 +1713,9 @@ export default {
                 "POST /projects/:id": "Rename/update project",
                 "DELETE /projects/:id": "Delete project (workspaces become unsorted)",
                 "POST /workspace/:id/assign": "Move workspace into/out of project (body: {project_id?})",
+                "POST /workspace/feedback": "Submit feedback (rating 1-5, comment, category)",
+                "GET /workspace/feedback": "List recent feedback entries",
+                "GET /workspace/feedback/summary": "Aggregated stats: avg rating, category breakdown, daily trend",
               },
             }),
             { headers: { "Content-Type": "application/json", ...(request ? corsHeaders(request, env) : corsHeadersAny()) } }
