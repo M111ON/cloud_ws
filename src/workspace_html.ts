@@ -108,7 +108,7 @@ export function dashboardHtml(): string {
   // Search panel
   s.push("<div class=\"panel\" id=\"p1\">");
   s.push("<div class=\"sbox\"><input type=\"text\" id=\"sq\" placeholder=\"Search memories...\" onkeydown=\"if(event.key==='Enter')doSearch()\"><button onclick=\"doSearch()\">Search</button></div>");
-  s.push("<div id=\"sstat\" class=\"ld\"></div>");
+  s.push("<div id=\"sstat\"></div>");
   s.push("<div id=\"sres\" class=\"sres\"></div>");
   s.push("</div>");
   // Feedback panel
@@ -132,10 +132,10 @@ export function dashboardHtml(): string {
   // Search
   s.push("async function doSearch(){");
   s.push("var q=document.getElementById('sq').value.trim();if(!q)return;");
-  s.push("document.getElementById('sstat').innerHTML='Searching...';document.getElementById('sres').innerHTML='';");
+  s.push("var ss=document.getElementById('sstat');ss.className='ld';ss.innerHTML='Searching...';document.getElementById('sres').innerHTML='';");
   s.push("try{var r=await fetch(W+'/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:q,k:10})});");
   s.push("var d=await r.json();if(!d.ok)throw new Error(d.error||'Search failed');");
-  s.push("var rs=d.results||[];document.getElementById('sstat').innerHTML=rs.length+' result(s)';");
+  s.push("var rs=d.results||[];ss.className='';ss.innerHTML=rs.length+' result(s)';");
   s.push("document.getElementById('sres').innerHTML=rs.map(function(h,i){");
   s.push("var txt=(h.context||h.text||'').substring(0,500);");
   s.push("return '<div class=\"sri\" style=\"animation-delay:'+(i*0.05)+'s\"><div class=\"src\">'+esc(h.source_file)+' \u00b7 score: '+h.score.toFixed(3)+'</div><div class=\"srt\">'+esc(txt)+'</div></div>';");
