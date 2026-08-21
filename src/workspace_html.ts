@@ -61,13 +61,60 @@ export function dashboardHtml(): string {
   s.push(".ld{color:#888;font-size:.85rem;display:flex;align-items:center;gap:8px}");
   s.push(".ld::before{content:'';width:16px;height:16px;border:2px solid rgba(99,102,241,.3);border-top-color:#6366f1;border-radius:50%;animation:spin .8s linear infinite}");
   s.push("@media(max-width:640px){.gs{grid-template-columns:repeat(3,1fr)}.gauge{width:60px;height:60px}.gauge svg{width:60px;height:60px}.gauge .val{font-size:1rem}}");
+  // Tabs
+  s.push(".tabs{display:flex;gap:4px;margin-bottom:20px;flex-wrap:wrap}");
+  s.push(".tab{padding:10px 18px;border-radius:12px;background:rgba(26,26,42,.8);border:1px solid rgba(255,255,255,.08);color:#888;cursor:pointer;font-size:.85rem;transition:all .2s;backdrop-filter:blur(10px)}");
+  s.push(".tab:hover{color:#ccc;border-color:rgba(99,102,241,.3)}");
+  s.push(".tab.ac{background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border-color:#6366f1;box-shadow:0 4px 15px rgba(99,102,241,.3)}");
+  s.push(".panel{display:none}.panel.ac{display:block;animation:fadeIn .3s ease}");
+  // Search
+  s.push(".sbox{display:flex;gap:8px;margin-bottom:16px}");
+  s.push(".sbox input{flex:1;padding:12px 16px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.03);color:#fff;font-size:.95rem;outline:none;transition:border-color .2s}");
+  s.push(".sbox input:focus{border-color:#6366f1;box-shadow:0 0 0 3px rgba(99,102,241,.15)}");
+  s.push(".sbox button{padding:12px 24px;border:none;border-radius:12px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;font-size:.95rem;cursor:pointer;transition:all .2s}");
+  s.push(".sbox button:hover{transform:translateY(-1px);box-shadow:0 4px 15px rgba(99,102,241,.4)}");
+  s.push(".sres{display:flex;flex-direction:column;gap:10px}");
+  s.push(".sri{background:rgba(26,26,42,.8);border:1px solid rgba(99,102,241,.15);border-radius:12px;padding:14px;animation:slideUp .3s ease both}");
+  s.push(".sri .src{font-size:.7rem;color:#6366f1;margin-bottom:4px}");
+  s.push(".sri .srt{font-size:.85rem;color:#ccc;line-height:1.5;white-space:pre-wrap;word-break:break-word}");
+  s.push(".sri .srt b{color:#a78bfa;font-weight:600}");
+  // Feedback panel
+  s.push(".fb-panel{background:rgba(26,26,42,.8);border:1px solid rgba(99,102,241,.15);border-radius:16px;padding:20px;animation:slideUp .3s ease}");
+  s.push(".fb-panel h3{font-size:1rem;color:#fff;margin-bottom:16px}");
+  s.push(".fb-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:16px}");
+  s.push(".fb-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:14px;text-align:center}");
+  s.push(".fb-card .fb-num{font-size:1.5rem;font-weight:700;color:#6366f1}");
+  s.push(".fb-card .fb-lbl{font-size:.75rem;color:#888;margin-top:4px}");
+  s.push(".fb-list{display:flex;flex-direction:column;gap:8px}");
+  s.push(".fb-item{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:10px;padding:12px;display:flex;justify-content:space-between;align-items:center}");
+  s.push(".fb-item .fb-cat{font-size:.75rem;padding:3px 10px;border-radius:20px;background:rgba(99,102,241,.15);color:#a78bfa}");
+  s.push(".fb-stars-row{display:flex;gap:2px;font-size:.9rem;color:#fbbf24}");
   s.push("</style></head><body><div class=\"c\">");
   s.push("<h1>&#9889; Cloud Workspace Pool</h1>");
   s.push("<p class=\"sub\">Active workspaces &mdash; loaded state, no search needed</p>");
   s.push("<div class=\"gs\" id=\"stats\"></div>");
+  // Tabs
+  s.push("<div class=\"tabs\">");
+  s.push("<div class=\"tab ac\" onclick=\"showTab(0)\">&#x1f4ca; Pool</div>");
+  s.push("<div class=\"tab\" onclick=\"showTab(1)\">&#x1f50d; Search</div>");
+  s.push("<div class=\"tab\" onclick=\"showTab(2)\">&#11088; Feedback</div>");
+  s.push("</div>");
+  // Pool panel
+  s.push("<div class=\"panel ac\" id=\"p0\">");
   s.push("<div class=\"ab\"><button class=\"rf\" onclick=\"loadPool()\">&#x21bb; Refresh</button></div>");
   s.push("<div id=\"status\"></div>");
   s.push("<div id=\"workspaces\" class=\"wl\"></div>");
+  s.push("</div>");
+  // Search panel
+  s.push("<div class=\"panel\" id=\"p1\">");
+  s.push("<div class=\"sbox\"><input type=\"text\" id=\"sq\" placeholder=\"Search memories...\" onkeydown=\"if(event.key==='Enter')doSearch()\"><button onclick=\"doSearch()\">Search</button></div>");
+  s.push("<div id=\"sstat\" class=\"ld\"></div>");
+  s.push("<div id=\"sres\" class=\"sres\"></div>");
+  s.push("</div>");
+  // Feedback panel
+  s.push("<div class=\"panel\" id=\"p2\">");
+  s.push("<div class=\"fb-panel\" id=\"fbpanel\"><h3>&#11088; Feedback Summary</h3><div id=\"fbcontent\"><div class=\"ld\">Loading...</div></div></div>");
+  s.push("</div>");
   s.push("</div><script>");
   // JavaScript (no template literals — all string concat)
   s.push("var W=location.origin;");
@@ -80,6 +127,43 @@ export function dashboardHtml(): string {
   s.push("function ak(){var k=localStorage.getItem('CF_MEMORY_KEY')||prompt('API key:')||'';if(k)localStorage.setItem('CF_MEMORY_KEY',k);return k;}");
   s.push("function ah(json){var h=json?{'Content-Type':'application/json'}:{};var k=ak();if(k)h['X-API-Key']=k;return h;}");
   s.push("function gauge(val,max,color){var pct=Math.min(val/max,1);var off=283-(283*pct);return '<div class=\"gauge\" style=\"--gc:'+color+'\"><svg viewBox=\"0 0 100 100\"><circle class=\"bg\" cx=\"50\" cy=\"50\" r=\"45\"/><circle class=\"fg\" cx=\"50\" cy=\"50\" r=\"45\" style=\"stroke:'+color+';--target:'+off+'\"/></svg><div class=\"val\">'+val+'</div></div>'}");
+  // Tab switching
+  s.push("function showTab(i){document.querySelectorAll('.tab').forEach(function(t,j){t.className='tab'+(j===i?' ac':'')});document.querySelectorAll('.panel').forEach(function(p,j){p.className='panel'+(j===i?' ac':'')});if(i===0)loadPool();if(i===2)loadFeedback();}");
+  // Search
+  s.push("async function doSearch(){");
+  s.push("var q=document.getElementById('sq').value.trim();if(!q)return;");
+  s.push("document.getElementById('sstat').innerHTML='Searching...';document.getElementById('sres').innerHTML='';");
+  s.push("try{var r=await fetch(W+'/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:q,k:10})});");
+  s.push("var d=await r.json();if(!d.ok)throw new Error(d.error||'Search failed');");
+  s.push("var rs=d.results||[];document.getElementById('sstat').innerHTML=rs.length+' result(s)';");
+  s.push("document.getElementById('sres').innerHTML=rs.map(function(h,i){");
+  s.push("var txt=(h.context||h.text||'').substring(0,500);");
+  s.push("return '<div class=\"sri\" style=\"animation-delay:'+(i*0.05)+'s\"><div class=\"src\">'+esc(h.source_file)+' \u00b7 score: '+h.score.toFixed(3)+'</div><div class=\"srt\">'+esc(txt)+'</div></div>';");
+  s.push("}).join('');}catch(e){document.getElementById('sstat').innerHTML='<div class=\"er\">'+esc(e.message)+'</div>';}}");
+  // Feedback summary
+  s.push("async function loadFeedback(){");
+  s.push("var el=document.getElementById('fbcontent');el.innerHTML='<div class=\"ld\">Loading...</div>';");
+  s.push("try{var r=await fetch(W+'/workspace/feedback/summary?days=30',{headers:ah(false)});var d=await r.json();");
+  s.push("if(!d.ok)throw new Error(d.error||'Failed');");
+  s.push("var stars=function(n){var s='';for(var i=0;i<5;i++)s+=i<n?'\u2605':'\u2606';return s;};");
+  s.push("var html='<div class=\"fb-grid\">'");
+  s.push("+'<div class=\"fb-card\"><div class=\"fb-num\">'+d.total+'</div><div class=\"fb-lbl\">Total Reviews</div></div>'");
+  s.push("+'<div class=\"fb-card\"><div class=\"fb-num\">'+d.avg_rating+'</div><div class=\"fb-lbl\">Avg Rating '+stars(Math.round(d.avg_rating))+'</div></div>'");
+  s.push("+'<div class=\"fb-card\"><div class=\"fb-num\">'+d.days+'</div><div class=\"fb-lbl\">Days Tracked</div></div>'");
+  s.push("</div>';");
+  s.push("if(d.by_category&&d.by_category.length){");
+  s.push("html+='<div style=\"margin-bottom:12px;font-size:.85rem;color:#ccc\">By Category:</div><div class=\"fb-list\">';");
+  s.push("html+=d.by_category.map(function(c){return '<div class=\"fb-item\"><span class=\"fb-cat\">'+esc(c.category)+'</span><span style=\"color:#888;font-size:.8rem\">'+c.count+' reviews \u00b7 avg '+c.avg_rating+'</span></div>';}).join('');");
+  s.push("html+='</div>';}");
+  s.push("if(d.distribution){");
+  s.push("html+='<div style=\"margin-top:12px;font-size:.85rem;color:#ccc\">Rating Distribution:</div><div style=\"display:flex;gap:6px;margin-top:8px\">';");
+  s.push("[5,4,3,2,1].forEach(function(r){var c=d.distribution[r]||0;var w=d.total>0?Math.round(c/d.total*100):0;");
+  s.push("html+='<div style=\"flex:1;text-align:center\"><div style=\"font-size:.75rem;color:#fbbf24\">'+stars(r)+'</div>'");
+  s.push("+'<div style=\"height:4px;background:rgba(255,255,255,.06);border-radius:4px;margin:4px 0;overflow:hidden\"><div style=\"height:100%;width:'+w+'%;background:linear-gradient(90deg,#6366f1,#a78bfa);border-radius:4px\"></div></div>'");
+  s.push("+'<div style=\"font-size:.7rem;color:#888\">'+c+'</div></div>';});");
+  s.push("html+='</div>';}");
+  s.push("el.innerHTML=html;}catch(e){el.innerHTML='<div class=\"er\">'+esc(e.message)+'</div>';}}");
+  // Pool loader
   s.push("async function loadPool(){");
   s.push("st.innerHTML='<div class=\"ld\">Loading...</div>';wsEl.innerHTML='';");
   s.push("try{");
