@@ -169,15 +169,18 @@ def ws_load(workspace_id: str) -> str:
 
 
 @mcp.tool()
-def ws_create(name: str, label: str = "", next_steps: list = [],
-              context: str = "", api_key: str = "") -> str:
-    """Create a new workspace (active unit of work with lossless state).
+def ws_create(name: str, label: str = "", template: str = "blank",
+              next_steps: list = [], context: str = "",
+              variables: dict = None, decisions: dict = None,
+              api_key: str = "") -> str:
+    """Create a new workspace. Templates: blank, project, research, meeting.
     api_key defaults to the configured CLOUD_MEMORY_API_KEY."""
-    return _ws_call("ws_create", {
-        "name": name, "label": label,
-        "next_steps": next_steps, "context": context,
-        "api_key": api_key or API_KEY,
-    })
+    args = {"name": name, "label": label, "template": template,
+            "next_steps": next_steps, "context": context,
+            "api_key": api_key or API_KEY}
+    if variables: args["variables"] = variables
+    if decisions: args["decisions"] = decisions
+    return _ws_call("ws_create", args)
 
 
 @mcp.tool()
@@ -206,6 +209,86 @@ def ws_checkpoint(workspace_id: str, fact_summary: str = "",
         "fact_summary": fact_summary,
         "api_key": api_key or API_KEY,
     })
+
+
+@mcp.tool()
+def ws_search(workspace_id: str, q: str, k: int = 10) -> str:
+    """Search within a workspace's state (files, variables, decisions,
+    next_steps). Returns matching snippets."""
+    return _ws_call("ws_search", {"workspace_id": workspace_id, "q": q, "k": k})
+
+
+@mcp.tool()
+def ws_heartbeat(workspace_id: str, agent: str = "") -> str:
+    """Send heartbeat to keep workspace alive. Auto-sent by sync push/pull."""
+    return _ws_call("ws_heartbeat", {"workspace_id": workspace_id, "agent": agent})
+
+
+@mcp.tool()
+def ws_claim(workspace_id: str, agent: str, api_key: str = "") -> str:
+    """Claim workspace for exclusive write access."""
+    return _ws_call("ws_claim", {"workspace_id": workspace_id, "agent": agent, "api_key": api_key or API_KEY})
+
+
+@mcp.tool()
+def ws_release(workspace_id: str, agent: str, api_key: str = "") -> str:
+    """Release claim on a workspace."""
+    return _ws_call("ws_release", {"workspace_id": workspace_id, "agent": agent, "api_key": api_key or API_KEY})
+
+
+@mcp.tool()
+def ws_archive(workspace_id: str, api_key: str = "") -> str:
+    """Archive a workspace (preserved but removed from active pool)."""
+    return _ws_call("ws_archive", {"workspace_id": workspace_id, "api_key": api_key or API_KEY})
+
+
+@mcp.tool()
+def ws_delete(workspace_id: str, api_key: str = "") -> str:
+    """Permanently delete a workspace. Cannot be undone."""
+    return _ws_call("ws_delete", {"workspace_id": workspace_id, "api_key": api_key or API_KEY})
+
+
+@mcp.tool()
+def ws_pool_status() -> str:
+    """Full pool status: active/paused/archived counts, claimed, stale."""
+    return _ws_call("ws_pool_status", {})
+
+
+@mcp.tool()
+def ws_feedback(rating: int = 0, category: str = "general",
+               comment: str = "", workspace_id: str = "",
+               list_feedback: bool = False, summary: bool = False,
+               api_key: str = "") -> str:
+    """Submit, list, or summarize feedback. Modes:
+    - Submit: pass rating (1-5)
+    - List: pass list_feedback=True
+    - Summary: pass summary=True (avg rating, category breakdown, trend)"""
+    if summary:
+        return _ws_call("ws_feedback", {"summary": True, "workspace_id": workspace_id})
+    if list_feedback:
+        return _ws_call("ws_feedback", {"list": True, "workspace_id": workspace_id})
+    return _ws_call("ws_feedback", {
+        "rating": rating, "category": category, "comment": comment,
+        "workspace_id": workspace_id, "api_key": api_key or API_KEY,
+    })
+
+
+@mcp.tool()
+def project_list() -> str:
+    """List projects (nests) with workspace counts."""
+    return _ws_call("project_list", {})
+
+
+@mcp.tool()
+def project_create(name: str, description: str = "", api_key: str = "") -> str:
+    """Create a project to group workspaces."""
+    return _ws_call("project_create", {"name": name, "description": description, "api_key": api_key or API_KEY})
+
+
+@mcp.tool()
+def ws_assign(workspace_id: str, project_id: str = "", api_key: str = "") -> str:
+    """Move workspace into/out of a project (empty project_id to unassign)."""
+    return _ws_call("ws_assign", {"workspace_id": workspace_id, "project_id": project_id, "api_key": api_key or API_KEY})
 
 
 if __name__ == "__main__":
