@@ -195,7 +195,33 @@ export function dashboardHtml(): string {
   s.push("el.innerHTML='<div class=\"ld\">Loading...</div>';");
   s.push("try{var r=await fetch(W+'/workspace/'+id);var d=await r.json();");
   s.push("if(!d.ok)throw new Error(d.error);var ws=d.workspace,s2=ws.state||{};");
-  s.push("var h='<details open><summary>&#x1f4e6; State Bundle</summary><pre>'+JSON.stringify(s2,null,2)+'</pre></details>';");
+  s.push("var h='<div style=\"margin-top:12px;animation:slideUp .3s ease\">';");
+  // Files section
+  s.push("var files=s2.files||{};var fkeys=Object.keys(files);");
+  s.push("if(fkeys.length){h+='<div style=\"margin-bottom:12px\"><div style=\"font-size:.8rem;color:#6366f1;margin-bottom:6px;font-weight:600\">&#x1f4c4; Files ('+fkeys.length+')</div>';");
+  s.push("fkeys.forEach(function(k){h+='<div style=\"background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.06);border-radius:8px;padding:8px 12px;margin-bottom:6px\"><div style=\"font-size:.75rem;color:#a78bfa;margin-bottom:4px\">'+esc(k)+'</div><pre style=\"margin:0;font-size:.75rem;color:#888;white-space:pre-wrap;max-height:120px;overflow:auto\">'+esc(files[k].substring(0,500))+'</pre></div>';});");
+  s.push("h+='</div>';}");
+  // Variables section
+  s.push("var vars=s2.variables||{};var vkeys=Object.keys(vars);");
+  s.push("if(vkeys.length){h+='<div style=\"margin-bottom:12px\"><div style=\"font-size:.8rem;color:#8b5cf6;margin-bottom:6px;font-weight:600\">&#x1f527; Variables ('+vkeys.length+')</div>';");
+  s.push("vkeys.forEach(function(k){h+='<div style=\"display:flex;justify-content:space-between;align-items:center;background:rgba(139,92,246,.08);border:1px solid rgba(139,92,246,.15);border-radius:8px;padding:8px 12px;margin-bottom:4px\"><span style=\"font-size:.8rem;color:#a78bfa\">'+esc(k)+'</span><span style=\"font-size:.8rem;color:#ccc\">'+esc(vars[k])+'</span></div>';});");
+  s.push("h+='</div>';}");
+  // Decisions section
+  s.push("var decs=s2.decisions||{};var dkeys=Object.keys(decs);");
+  s.push("if(dkeys.length){h+='<div style=\"margin-bottom:12px\"><div style=\"font-size:.8rem;color:#06b6d4;margin-bottom:6px;font-weight:600\">&#x1f4cb; Decisions ('+dkeys.length+')</div>';");
+  s.push("dkeys.forEach(function(k){h+='<div style=\"background:rgba(6,182,212,.08);border:1px solid rgba(6,182,212,.15);border-radius:8px;padding:8px 12px;margin-bottom:4px\"><div style=\"font-size:.7rem;color:#22d3ee;margin-bottom:2px\">'+esc(k)+'</div><div style=\"font-size:.8rem;color:#ccc\">'+esc(decs[k])+'</div></div>';});");
+  s.push("h+='</div>';}");
+  // Next steps section
+  s.push("var steps=s2.next_steps||[];");
+  s.push("if(steps.length){h+='<div style=\"margin-bottom:12px\"><div style=\"font-size:.8rem;color:#10b981;margin-bottom:6px;font-weight:600\">&#x1f4cc; Next Steps ('+steps.length+')</div>';");
+  s.push("steps.forEach(function(s3,i){h+='<div style=\"display:flex;align-items:center;gap:8px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.15);border-radius:8px;padding:8px 12px;margin-bottom:4px\"><span style=\"font-size:.7rem;color:#34d399;min-width:20px\">'+(i+1)+'</span><span style=\"font-size:.8rem;color:#ccc\">'+esc(s3)+'</span></div>';});");
+  s.push("h+='</div>';}");
+  // Context section
+  s.push("var ctx=s2.context||'';");
+  s.push("if(ctx){h+='<div style=\"margin-bottom:12px\"><div style=\"font-size:.8rem;color:#f59e0b;margin-bottom:6px;font-weight:600\">&#x1f4dd; Context</div>';");
+  s.push("h+='<div style=\"background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.15);border-radius:8px;padding:10px 12px;font-size:.85rem;color:#ccc\">'+esc(ctx)+'</div></div>';}");
+  s.push("h+='</div>';");
+  // Action buttons
   s.push("h+='<div class=\"wa\">'");
   s.push("+'<button onclick=\"doHb(\\''+id+'\\')\">&#10084; Heartbeat</button> '");
   s.push("+'<button onclick=\"doCl(\\''+id+'\\')\">&#x1f511; Claim</button> '");
