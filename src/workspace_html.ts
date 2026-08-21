@@ -134,7 +134,7 @@ export function dashboardHtml(): string {
   s.push("var q=document.getElementById('sq').value.trim();if(!q)return;");
   s.push("var ss=document.getElementById('sstat');ss.className='ld';ss.innerHTML='Searching...';document.getElementById('sres').innerHTML='';");
   s.push("try{var r=await fetch(W+'/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:q,k:10})});");
-  s.push("var d=await r.json();if(!d.ok)throw new Error(d.error||'Search failed');");
+  s.push("var d=await r.json();if(d.error)throw new Error(d.error);");
   s.push("var rs=d.results||[];ss.className='';ss.innerHTML=rs.length+' result(s)';");
   s.push("document.getElementById('sres').innerHTML=rs.map(function(h,i){");
   s.push("var txt=(h.context||h.text||'').substring(0,500);");
