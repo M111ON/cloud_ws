@@ -61,6 +61,11 @@ export function dashboardHtml(): string {
   s.push(".ld{color:#888;font-size:.85rem;display:flex;align-items:center;gap:8px}");
   s.push(".ld::before{content:'';width:16px;height:16px;border:2px solid rgba(99,102,241,.3);border-top-color:#6366f1;border-radius:50%;animation:spin .8s linear infinite}");
   s.push("@media(max-width:640px){.gs{grid-template-columns:repeat(3,1fr)}.gauge{width:60px;height:60px}.gauge svg{width:60px;height:60px}.gauge .val{font-size:1rem}}");
+  // Nav bar
+  s.push(".nav{display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap}");
+  s.push(".nav a{padding:6px 14px;border-radius:8px;background:rgba(26,26,42,.8);border:1px solid rgba(255,255,255,.08);color:#888;font-size:.78rem;text-decoration:none;transition:all .15s;white-space:nowrap;backdrop-filter:blur(10px)}");
+  s.push(".nav a:hover{color:#e0e0e0;border-color:rgba(99,102,241,.4);background:rgba(99,102,241,.15)}");
+  s.push(".nav a.cur{background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border-color:#6366f1}");
   // Tabs
   s.push(".tabs{display:flex;gap:4px;margin-bottom:20px;flex-wrap:wrap}");
   s.push(".tab{padding:10px 18px;border-radius:12px;background:rgba(26,26,42,.8);border:1px solid rgba(255,255,255,.08);color:#888;cursor:pointer;font-size:.85rem;transition:all .2s;backdrop-filter:blur(10px)}");
@@ -92,6 +97,7 @@ export function dashboardHtml(): string {
   s.push("</style></head><body><div class=\"c\">");
   s.push("<h1>&#9889; Cloud Workspace Pool</h1>");
   s.push("<p class=\"sub\">Active workspaces &mdash; loaded state, no search needed</p>");
+  s.push("<div class=\"nav\"><a href=\"/\">Search</a><a href=\"/admin\">Admin</a><a href=\"/workspace\" class=\"cur\">Pool</a></div>");
   s.push("<div class=\"gs\" id=\"stats\"></div>");
   // Tabs
   s.push("<div class=\"tabs\">");
@@ -266,9 +272,15 @@ export function editorHtml(): string {
   s.push(".msg.er{background:#450a0a;color:#f87171}");
   s.push(".ws-sel{display:flex;gap:8px;margin-bottom:16px}");
   s.push(".ws-sel select{flex:1}");
+  // Nav bar
+  s.push(".nav{display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap}");
+  s.push(".nav a{padding:6px 14px;border-radius:8px;background:#1a1a1a;border:1px solid #333;color:#888;font-size:.78rem;text-decoration:none;transition:all .15s;white-space:nowrap}");
+  s.push(".nav a:hover{color:#e0e0e0;border-color:#4338ca;background:#1e1b4b}");
+  s.push(".nav a.cur{background:#6366f1;color:#fff;border-color:#6366f1}");
   s.push("</style></head><body><div class=\"c\">");
   s.push("<h1>&#9999;&#65039; Workspace Editor</h1>");
   s.push("<p class=\"sub\">Create, edit, and push workspace state from browser</p>");
+  s.push("<div class=\"nav\"><a href=\"/\">Search</a><a href=\"/admin\">Admin</a><a href=\"/workspace\">Pool</a></div>");
   s.push("<div class=\"tabs\">");
   s.push("<div class=\"tab ac\" onclick=\"showTab(0)\">Create</div>");
   s.push("<div class=\"tab\" onclick=\"showTab(1)\">Edit</div>");

@@ -1486,12 +1486,17 @@ function handleWebUI(): Response {
   .stats { color: #666; font-size: 0.75rem; text-align: center; margin: 8px 0; }
   .error { color: #f87171; font-size: 0.85rem; margin: 8px 0; }
   .loading { color: #888; font-size: 0.85rem; }
+  .nav{display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap}
+  .nav a{padding:6px 14px;border-radius:8px;background:#1a1a1a;border:1px solid #333;color:#888;font-size:.78rem;text-decoration:none;transition:all .15s;white-space:nowrap}
+  .nav a:hover{color:#e0e0e0;border-color:#4338ca;background:#1e1b4b}
+  .nav a.cur{background:#6366f1;color:#fff;border-color:#6366f1}
 </style>
 </head>
 <body>
 <div class="container">
   <h1>Cloud Memory</h1>
   <p class="subtitle" id="subtitle">Semantic search across chat sessions</p>
+  <div class="nav"><a href="/" class="cur">Search</a><a href="/admin">Admin</a><a href="/workspace">Pool</a></div>
   <div class="search-box">
     <input type="text" id="query" placeholder="Search your memories..." />
     <button id="searchBtn" onclick="doSearch()">Search</button>

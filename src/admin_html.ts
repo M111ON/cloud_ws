@@ -49,6 +49,13 @@ label{display:block;font-size:.72rem;color:#888;margin:8px 0 2px}
 .rcnts{display:flex;gap:8px;font-size:.72rem;color:#888;white-space:nowrap}
 .rupd{font-size:.7rem;color:#555;white-space:nowrap}
 .editbtn{background:#374151;padding:5px 12px;font-size:.72rem}
+/* bulk ops */
+.bulk{display:none;align-items:center;gap:8px;padding:8px 12px;background:#1e1b4b;border:1px solid #4338ca;border-radius:10px;margin-bottom:10px;flex-wrap:wrap}
+.bulk.show{display:flex}
+.bulk .selcnt{font-size:.78rem;color:#a5b4fc;white-space:nowrap}
+.bulk button{padding:5px 11px;font-size:.72rem}
+.rcb{width:16px;height:16px;cursor:pointer;accent-color:#6366f1;flex:none;margin:0}
+.rcb.wr{width:18px;height:18px}
 /* project groups */
 .pgrp{margin-bottom:14px}
 .pgh{display:flex;align-items:center;gap:10px;background:#151518;border:1px solid #26262b;border-radius:10px;padding:10px 14px;cursor:pointer;user-select:none}
@@ -131,6 +138,11 @@ td .csel{width:auto}
 .kbar button{padding:5px 11px;font-size:.72rem}
 #kmsg{font-size:.72rem;color:#888;white-space:nowrap}
 .help{margin-top:24px;background:#111;border:1px solid #222;border-radius:12px;overflow:hidden}
+/* nav bar */
+.nav{display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap}
+.nav a{padding:6px 14px;border-radius:8px;background:#1a1a1a;border:1px solid #252525;color:#888;font-size:.78rem;text-decoration:none;transition:all .15s;white-space:nowrap}
+.nav a:hover{color:#e0e0e0;border-color:#4338ca;background:#1e1b4b}
+.nav a.cur{background:#6366f1;color:#fff;border-color:#6366f1}
 .help-h{padding:10px 16px;font-size:.8rem;color:#94a3b8;cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center}
 .help-h:hover{color:#818cf8}
 #helpBody{padding:0 16px 14px;display:block}
@@ -150,6 +162,12 @@ td .csel{width:auto}
 <div class="c">
   <h1>&#9889; Cloud Workspace Admin</h1>
   <p class="sub">Pool + state editor + query cache</p>
+
+  <div class="nav">
+    <a href="/" title="Search cloud memory">Search</a>
+    <a href="/admin" class="cur">Admin</a>
+    <a href="/workspace" title="Pool dashboard with gauges">Pool</a>
+  </div>
 
   <div class="kbar" id="kbar" style="display:none">
     <input id="akey" type="password" placeholder="API key (X-API-Key)">
@@ -179,6 +197,15 @@ td .csel{width:auto}
       <button class="sec" onclick="loadPool()">Refresh</button>
       <button onclick="openCreate()">+ New</button>
       <button class="sec" onclick="openProjCreate()">+ Project</button>
+    </div>
+    <div class="bulk" id="bulkBar">
+      <input type="checkbox" class="rcb wr" id="selAllWs" onclick="toggleSelAllWs()">
+      <span class="selcnt" id="selCnt">0 selected</span>
+      <button onclick="bulkPause()">Pause</button>
+      <button onclick="bulkResume()">Resume</button>
+      <button onclick="bulkArchive()">Archive</button>
+      <button onclick="bulkMoveProj()">Move to Project</button>
+      <button class="del" onclick="bulkDelete()">Delete</button>
     </div>
     <div class="ps" id="stats"></div>
     <div id="status"></div>
@@ -327,6 +354,7 @@ var PRMODE='create';
 var PRID='';
 var CACHE=[];
 var SEL={};
+var SEL_WS={};
 
 function $(id){return document.getElementById(id);}
 function esc(t){var d=document.createElement('div');d.textContent=(t==null?'':String(t));return d.innerHTML;}
@@ -337,8 +365,8 @@ function ak(){var k=localStorage.getItem('CF_MEMORY_KEY');if(k)return k;var m=pr
 function ah(json){var h=json?{'Content-Type':'application/json'}:{};var k=ak();if(k)h['X-API-Key']=k;return h;}
 function toast(msg,ok){var t=document.createElement('div');t.className='toast '+(ok?'ok':'er');t.textContent=msg;$('toasts').appendChild(t);setTimeout(function(){t.classList.add('out');setTimeout(function(){t.remove();},350);},3000);}
 function askConfirm(msg){return new Promise(function(res){window.__cfRes=res;$('cfMsg').textContent=msg;$('cfOverlay').style.display='flex';});}
-function cfYes(){var r=window.__cfRes;$('cfOverlay').style.display='none';r(true);}
-function cfNo(){var r=window.__cfRes;$('cfOverlay').style.display='none';r(false);}
+function cfYes(){var r=window.__cfRes;$('cfOverlay').style.display='none';if(typeof r==='function')r(true);else r(true);}
+function cfNo(){var r=window.__cfRes;$('cfOverlay').style.display='none';if(typeof r==='function')r(false);else r(false);}
 
 function showTab(i){
   var ts=document.querySelectorAll('.tab');
@@ -458,6 +486,7 @@ function renderPool(){
         if(cl)bd+='<span class="bg c">&#128273; '+esc(cl.claimed_by)+'</span>';
         if(sl)bd+='<span class="bg s">&#9888; '+sl.idle_hours+'h</span>';
         return '<div class="row '+cls+'" onclick="openEditor(\\''+ws.id+'\\')">'+
+          '<input type="checkbox" class="rcb" onclick="event.stopPropagation();toggleWsSel(\\''+ws.id+'\\')"'+(SEL_WS[ws.id]?' checked':'')+'>'+
           '<div class="rname">'+esc(ws.name)+'<span class="rid">'+ws.id+'</span></div>'+
           '<div class="rbadges">'+bd+'</div>'+
           '<div class="rcnts">'+(ws.file_count||0)+'f &middot; '+(ws.variable_count||0)+'v &middot; '+(ws.decision_count||0)+'d &middot; '+(ws.next_step_count||0)+'s</div>'+
@@ -468,6 +497,59 @@ function renderPool(){
       '</div></div>';
   });
   wsEl.innerHTML=html;
+}
+
+// ── Bulk ops ──
+function toggleWsSel(id){
+  if(SEL_WS[id])delete SEL_WS[id];else SEL_WS[id]=true;
+  updateBulkBar();
+}
+function toggleSelAllWs(){
+  var c=$('selAllWs').checked;
+  SEL_WS={};
+  if(c)ALL.forEach(function(w){
+    if(FILTER.st==='all'||w.status===FILTER.st)SEL_WS[w.id]=true;
+  });
+  updateBulkBar();
+  renderPool();
+}
+function updateBulkBar(){
+  var n=Object.keys(SEL_WS).length;
+  $('selCnt').textContent=n+' selected';
+  $('bulkBar').className='bulk'+(n?' show':'');
+}
+function selIds(){return Object.keys(SEL_WS);}
+async function bulkOp(label,fn){
+  var ids=selIds();
+  if(!ids.length)return toast('Select workspaces first',false);
+  if(!await askConfirm(label+' '+ids.length+' workspace'+(ids.length>1?'s':'')+'?'))return;
+  var ok=0,er=0;
+  for(var i=0;i<ids.length;i++){
+    try{await fn(ids[i]);ok++;}
+    catch(e){er++;}
+  }
+  toast(label+': '+ok+' ok'+(er?', '+er+' failed':''),er===0);
+  SEL_WS={};updateBulkBar();loadPool();
+}
+function bulkPause(){bulkOp('Pause',function(id){return fetch(W+'/workspace/'+id,{method:'POST',headers:ah(true),body:JSON.stringify({status:'paused',agent:AGENT})}).then(function(r){return r.json()}).then(function(d){if(!d.ok)throw new Error(d.error)});});}
+function bulkResume(){bulkOp('Resume',function(id){return fetch(W+'/workspace/'+id,{method:'POST',headers:ah(true),body:JSON.stringify({status:'active',agent:AGENT})}).then(function(r){return r.json()}).then(function(d){if(!d.ok)throw new Error(d.error)});});}
+function bulkArchive(){bulkOp('Archive',function(id){return fetch(W+'/workspace/'+id+'/archive',{method:'POST',headers:ah(false)}).then(function(r){return r.json()}).then(function(d){if(!d.ok)throw new Error(d.error)});});}
+function bulkDelete(){bulkOp('Delete',function(id){return fetch(W+'/workspace/'+id+'/delete',{method:'POST',headers:ah(false)}).then(function(r){return r.json()}).then(function(d){if(!d.ok)throw new Error(d.error)});});}
+function bulkMoveProj(){
+  var ids=selIds();
+  if(!ids.length)return toast('Select workspaces first',false);
+  var opts='<option value="">(unsorted)</option>';
+  PROJS.forEach(function(p){opts+='<option value="'+p.id+'">'+esc(p.name)+'</option>';});
+  $('cfMsg').innerHTML='<label style="font-size:.82rem;color:#ccc;display:block;margin-bottom:6px">Move '+ids.length+' workspace'+(ids.length>1?'s':'')+' to project:</label><select id="bulkProjSel" style="width:100%;padding:8px;border:1px solid #333;border-radius:8px;background:#141414;color:#fff">'+opts+'</select>';
+  $('cfOverlay').style.display='flex';
+  window.__cfRes=function(yes){
+    $('cfOverlay').style.display='none';
+    if(!yes)return;
+    var pid=$('bulkProjSel').value||null;
+    bulkOp('Move to project',function(id){
+      return fetch(W+'/workspace/'+id,{method:'POST',headers:ah(true),body:JSON.stringify({project_id:pid,agent:AGENT})}).then(function(r){return r.json()}).then(function(d){if(!d.ok)throw new Error(d.error)});
+    });
+  };
 }
 
 // ── Projects ──

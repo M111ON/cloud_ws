@@ -258,6 +258,12 @@ def ws_pool_status() -> str:
 
 
 @mcp.tool()
+def ws_stale_detect(api_key: str = "") -> str:
+    """Find and auto-pause workspaces with stale heartbeats (>24h without activity)."""
+    return _ws_call("ws_stale_detect", {"api_key": api_key or API_KEY})
+
+
+@mcp.tool()
 def ws_feedback(rating: int = 0, category: str = "general",
                comment: str = "", workspace_id: str = "",
                list_feedback: bool = False, summary: bool = False,
@@ -286,6 +292,18 @@ def project_list() -> str:
 def project_create(name: str, description: str = "", api_key: str = "") -> str:
     """Create a project to group workspaces."""
     return _ws_call("project_create", {"name": name, "description": description, "api_key": api_key or API_KEY})
+
+
+@mcp.tool()
+def project_update(project_id: str, name: str = "", description: str = "", api_key: str = "") -> str:
+    """Rename or update a project's description."""
+    return _ws_call("project_update", {"project_id": project_id, "name": name, "description": description, "api_key": api_key or API_KEY})
+
+
+@mcp.tool()
+def project_delete(project_id: str, api_key: str = "") -> str:
+    """Delete a project. Its workspaces are unassigned (become unsorted) — workspace data is NOT deleted."""
+    return _ws_call("project_delete", {"project_id": project_id, "api_key": api_key or API_KEY})
 
 
 @mcp.tool()
