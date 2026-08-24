@@ -68,10 +68,13 @@ def memory_get(source_file: str, from_: int, to: int) -> str:
 
 @mcp.tool()
 def memory_remember(text: str, source: str = "user-memory") -> str:
-    """Save a fact/note back to cloud memory (embeds + indexes server-side)."""
-    return json.dumps(call_worker("/remember", "POST", {
-        "text": text, "source": source
-    }), ensure_ascii=False, indent=2)
+    """Save a fact/note back to cloud memory (embeds + indexes server-side).
+
+    Note: write goes through the worker's /mcp JSON-RPC endpoint (tool
+    "memory_remember") — there is no REST /remember route on the worker
+    (calling it returns the endpoint manifest instead of storing anything).
+    """
+    return _ws_call("memory_remember", {"text": text, "source": source})
 
 
 @mcp.tool()
