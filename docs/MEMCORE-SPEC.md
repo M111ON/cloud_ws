@@ -99,8 +99,14 @@ Rules:
    (fact_store.sqlite3 96MB · 770 parts → twin 102MB, ×9 views lossless,
    byte-identical rebuild, damage-localizable) — gguf_roundtrip.exe compiled
    จาก DWGLS tools (mingw64)
-4. **Sync** — union-by-hash ระหว่าง device; damage drill reuse จาก R3
-5. **Views** — obsidian.md projection → cloud D1/KV
+4. ~~**Sync**~~ ✅ เสร็จ — `memcore/sync_delta.py`: export(cursor)/merge
+   union-by-hash; selftest ผ่าน (split A/B → exchange → converge 8,696
+   เท่ากันทั้งคู่, zero conflict)
+5. ~~**Views**~~ ✅ เสร็จ — `memcore/view_obsidian.py`: dictionary 4,507 notes
+   → `views/obsidian/` deterministic (re-run fingerprint เท่าเดิม);
+   D1 cloud view = เมื่อมี device ที่สอง/ต้อง query จากภายนอก
+
+## สถานะปัจจุบัน: ROADMAP ครบ 5/5 — engine ใช้งานได้ end-to-end
 
 ## 5. Open Questions
 

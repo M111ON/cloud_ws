@@ -16,3 +16,4 @@ __pycache__/
 memcore/__pycache__/
 memcore/fact_store.twin
 memcore/*.exe
+memcore/views/
