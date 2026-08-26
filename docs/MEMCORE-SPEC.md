@@ -54,8 +54,14 @@ Retrieval + synthesis       ← local 0.5B default; cloud burst opt-in (slots on
 ### Feed gate
 | Component | สถานะ |
 |-----------|--------|
-| `I:\tools\pre_embedding_filter` | stage 1-3 เสร็จ: parse chat .md → turn-hash dedup → classify (subagent/brainstorm/insight/embedded_doc) → facts.jsonl. stdlib-only, re-run safe |
-| LLM synthesis pass | ❌ ยังไม่ทำ — ต่อจาก facts.jsonl: group by term_hint → dictionary upsert |
+| `I:\tools\pre_embedding_filter` | stage 1-3 เสร็จ: parse chat .md → turn-hash dedup → classify (subagent/brainstorm/insight/embedded_doc) → `facts.jsonl` 4,189 rows |
+| LLM synthesis (`synthesize.py`) | ✅ **เสร็จ 100%** (24 Aug): NVIDIA NIM nemotron-3-nano-30b-a3b, map=4,188 gists + reduce=4,548 definitions, checkpoint ใน `synth_state.sqlite3` |
+| Export | `dictionary.jsonl` 9.5MB (4,507 terms) |
+| **FACT STORE** (`memcore/build_store.py`) | ✅ `fact_store.sqlite3` = 8,696 entries (4,507 definitions + 4,189 raw facts), blake2b-128 hash-keyed, FTS5 index — append-only, re-run safe |
+
+### Retrieval MVP
+`build_store.py --query "..."` — FTS5 bm25 + snippet ทดสอบผ่านทั้ง EN/TH
+(เช่น "SID swap decode hang" → เจอ dictionary entry sources=18 + raw exchanges)
 
 ### Memory systems อื่น (context ประกอบ)
 - vault (Obsidian) → **ย้ายไป cloud แล้ว**, local obsidian-memory index ไม่ใช่ recall layer หลัก
@@ -85,9 +91,8 @@ Rules:
 
 ## 4. Roadmap
 
-1. **Schema + feed** — wire synthesis pass ต่อ facts.jsonl → sqlite store
-   (LLM pass บน Colab หรือ local ก็ได้; upsert dictionary on term)
-2. **Retrieval MVP** — retrieve by term/embedding → synthesize ด้วย Qwen2.5-0.5B
+1. ~~**Schema + feed**~~ ✅ เสร็จ — fact_store.sqlite3 (8,696 entries, FTS5)
+2. **Retrieval MVP ขั้นถัดไป** — semantic layer เหนือ FTS5 (embedding rerank)
    → test queries จริง (product risk ตัวเดียวที่ยังไม่ prove: retrieval quality)
 3. **Pack** — serialize store ผ่าน twin machinery (gguf_roundtrip pattern, mechanical)
 4. **Sync** — union-by-hash ระหว่าง device; damage drill reuse จาก R3
