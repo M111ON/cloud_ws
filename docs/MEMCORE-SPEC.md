@@ -92,11 +92,15 @@ Rules:
 ## 4. Roadmap
 
 1. ~~**Schema + feed**~~ ✅ เสร็จ — fact_store.sqlite3 (8,696 entries, FTS5)
-2. **Retrieval MVP ขั้นถัดไป** — semantic layer เหนือ FTS5 (embedding rerank)
-   → test queries จริง (product risk ตัวเดียวที่ยังไม่ prove: retrieval quality)
-3. **Pack** — serialize store ผ่าน twin machinery (gguf_roundtrip pattern, mechanical)
+2. ~~**Retrieval MVP**~~ ✅ เสร็จ — hybrid RRF (FTS5+cosine) + **MCP server**
+   (`memcore_query`/`memcore_stats`, ผ่าน ClientSession test)
+   embedding: nemotron-3-embed-1b dim=2048, 8,696 vectors in 71s
+3. ~~**Pack**~~ ✅ เสร็จ — `memcore/pack.cmd`: store → RID twin
+   (fact_store.sqlite3 96MB · 770 parts → twin 102MB, ×9 views lossless,
+   byte-identical rebuild, damage-localizable) — gguf_roundtrip.exe compiled
+   จาก DWGLS tools (mingw64)
 4. **Sync** — union-by-hash ระหว่าง device; damage drill reuse จาก R3
-5. **Views** — sqlite⇄jsonl ก่อน → obsidian.md projection → cloud D1/KV
+5. **Views** — obsidian.md projection → cloud D1/KV
 
 ## 5. Open Questions
 

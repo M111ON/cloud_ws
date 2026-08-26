@@ -14,3 +14,5 @@ __pycache__/
 /dist/
 /*.png
 memcore/__pycache__/
+memcore/fact_store.twin
+memcore/*.exe
