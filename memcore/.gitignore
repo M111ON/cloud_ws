@@ -1,0 +1,5 @@
+# local store data / scratch — never commit
+__pycache__/
+*.pyc
+fact_store*.sqlite3
+*.err
