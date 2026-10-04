@@ -448,13 +448,20 @@ def block_facts(o, p):
         v = (p.get(key) or "").strip()
         if v:
             body += "\n%s: %s" % (key, v)
-    out = [{"content": head, "source_file": src, "pattern": "chatpool",
-            "kind": "chatlog", "term_hint": "chatpool:%s" % p["slug"]}]
-    if len(body) > len(head):
-        out.append({"content": body, "source_file": src,
-                    "pattern": "chatpool", "kind": "chatlog",
-                    "term_hint": "chatpool:%s" % p["slug"]})
-    return out
+    out = [head]
+    # Drop the body only when it adds nothing the title does not already say.
+    # Comparing lengths was the wrong test: a short story with a long method
+    # reads as "shorter" than the title and would silently swallow the method,
+    # which is the field worth keeping. None of the 59 blocks in the log trip
+    # this today, but the guard should answer "is there a second thing here",
+    # not "is it bigger".
+    tail = [v for v in ((p.get(k) or "").strip()
+                        for k in ("method", "evidence", "refs")) if v]
+    if p["story"].strip() or tail:
+        out.append(body)
+    return [{"content": c, "source_file": src, "pattern": "chatpool",
+             "kind": "chatlog", "term_hint": "chatpool:%s" % p["slug"]}
+            for c in out]
 
 
 def collect_chatpool(state, now, dry_run, max_lines=CP_SEGMENT):
