@@ -5,8 +5,13 @@ freebuff_daemon.py — tail chat logs into memcore v2 (local only).
 Collectors (all incremental, never full-scan):
   freebuff  <root>/.freebuff/desktop-v2.db, auto-discovered under I:/
             (seq-based resume; idle-gated on db mtime)
-  hermes    I:/keep/hms/chat_exports/*.md — state.db exports, Variant A
-            (content-hash per file; only new/changed files are parsed)
+  hermes    I:/Hermes/state.db — the live session database, read-only,
+            timestamp watermark, user + assistant prose only. This is the
+            source that actually holds recent history; the export dir below
+            is a stale mirror of it.
+  hermes_md I:/keep/hms/chat_exports/*.md — older exports of the same
+            sessions (content-hash per file; only new/changed files parsed).
+            Kept because it covers sessions already dropped from state.db.
   opencode  I:/OpenCode-data/opencode.db (2.8GB) via export_sessions.py
             --out WORKDIR, which keeps its own .last_export marker so only
             sessions with time_updated >= marker are dumped; fast-path skips
@@ -323,7 +328,99 @@ def collect_freebuff(db_path, last_seq):
     return facts, max_seq
 
 
-# ---- hermes collector (file-hash-based) ----
+# ---- hermes state.db collector (timestamp watermark) ----
+
+HERMES_DB = r"I:\Hermes\state.db"
+# Roles worth embedding. 'tool' is raw JSON of tool output — mostly file dumps
+# and command echoes, high volume and low meaning once embedded. 'assistant'
+# rows split into prose and pure tool-calls; the latter have empty content and
+# drop out on their own, so no extra filter is needed for them.
+HERMES_ROLES = ("user", "assistant")
+# Facts per pass, and why. Measured on this machine: reading 400 rows out of
+# the 800MB WAL database is 0.1s, embedding them is ~4s, so the cost is almost
+# all I/O on content and not worth batching bigger for its own sake. At 400 a
+# full pass measured 5.3s, which leaves a scheduled task that fires every 5
+# minutes almost entirely idle; the whole 8000-row backlog is ~9 passes, so a
+# larger batch trades a longer single pass for finishing sooner, with no risk
+# of colliding with the next fire since the lock already refuses overlap.
+HERMES_SEGMENT = 2000
+
+
+def hermes_conn():
+    """Read-only handle. state.db is WAL and live, so a normal connection
+    would take a shared lock on the app's own writes — this never writes,
+    not even to create the journal."""
+    if not os.path.exists(HERMES_DB):
+        return None
+    return sqlite3.connect("file:%s?mode=ro" % HERMES_DB, uri=True, timeout=5)
+
+
+def collect_hermes_db(state, dry_run, limit=HERMES_SEGMENT):
+    """I:/Hermes/state.db -> facts. Resumes on messages.timestamp.
+
+    Returns (facts, watermark, more). The watermark is the max timestamp
+    actually read, so rows sharing a timestamp with the last row are picked up
+    on the next pass rather than skipped: the next query starts strictly
+    below it and dedup is by content hash downstream anyway."""
+    cp = state.setdefault("hermes_db", {})
+    last_ts = float(cp.get("ts") or 0)
+    con = hermes_conn()
+    if con is None:
+        return [], last_ts, False
+    facts, more = [], False
+    try:
+        q = ("select id, session_id, role, content, timestamp from messages "
+             "where timestamp > ? and role in (%s) "
+             "and content is not null and length(content) > 0 "
+             "order by timestamp limit ?" %
+             ",".join("?" * len(HERMES_ROLES)))
+        rows = con.execute(q, (last_ts,) + HERMES_ROLES + (limit + 1,)).fetchall()
+        more = len(rows) > limit
+        rows = rows[:limit]
+        if not rows:
+            return [], last_ts, False
+        titles = {}
+        ids = sorted({r[1] for r in rows})
+        for i in range(0, len(ids), 50):        # stay under sqlite's var limit
+            chunk = ids[i:i + 50]
+            for sid, ti in con.execute(
+                    "select id, coalesce(title,'') from sessions "
+                    "where id in (%s)" % ",".join("?" * len(chunk)), chunk):
+                titles[sid] = ti
+        new_ts = last_ts
+        for mid, sid, role, content, ts in rows:
+            if not content:
+                continue
+            txt = strip_boilerplate(content)
+            if not txt:
+                continue
+            title = titles.get(sid) or sid
+            facts.append({"content": "[%s] %s" % (sid, txt),
+                          "source_file": "hermesdb:%s" % sid,
+                          "pattern": "hermes", "kind": "chatlog",
+                          "term_hint": title[:120] or "hermes"})
+            new_ts = max(new_ts, float(ts))
+        # Rows and facts are not the same number, and the gap is not a bug.
+        # state.db holds every turn ever typed, including one repeated many
+        # times in a session, while v2.eid hashes source_file+content, so a
+        # message typed 16 times is one fact. A 2000-row segment measured 233
+        # unique facts. Reporting rows alone made a pass look like it had
+        # almost nothing to do, so say both.
+        uniq = len({store_v2.eid(f["source_file"], f["content"].strip())
+                    for f in facts})
+        print("hermesdb: %d rows -> %d facts (%d unique)%s" %
+              (len(rows), len(facts), uniq, " (more)" if more else ""))
+        if dry_run and facts:
+            print("  %s" % facts[0]["content"][:110].replace("\n", " "))
+        return facts, new_ts, more
+    except sqlite3.Error as e:
+        print("hermesdb: %s" % e)
+        return [], last_ts, False
+    finally:
+        con.close()
+
+
+# ---- hermes export collector (file-hash-based) ----
 
 def collect_hermes(state_files, dry_run):
     facts, seen = [], []
@@ -659,8 +756,9 @@ def embed_facts(facts, db_path, batch=32):
             [(c[0], store_v2.DIM, v.astype(np.float32).tobytes())
              for c, v in zip(chunk, vecs)])
         db.commit()
-    db.execute("INSERT INTO entries_fts(entries_fts) VALUES('rebuild')")
-    db.commit()
+    # No 'rebuild' here on purpose: the triggers created by v2.SCHEMA keep
+    # entries_fts in step per row. Rebuilding cost 35.5s at 53.7k rows and was
+    # the single biggest cost in a pass; incremental inserts are instant.
     return len(rows)
 
 
@@ -707,6 +805,27 @@ def run_once(args):
                             "total": fb_cand,
                             "status": "caught-up",
                             "embedded": total})
+
+    if not only or "hermesdb" in only:
+        facts, new_ts, more = collect_hermes_db(state, args.dry_run)
+        if args.dry_run:
+            print("hermesdb: %d candidates" % len(facts))
+        elif facts or new_ts > float(state.get("hermes_db", {}).get("ts") or 0):
+            n = embed_facts(facts, args.db) if facts else 0
+            # Advance the watermark even when every row in the segment was
+            # boilerplate: leaving it behind would re-read the same rows on
+            # every pass and never make progress.
+            state.setdefault("hermes_db", {})["ts"] = new_ts
+            save_state(state)
+            total += n
+            write_progress({"source": "hermesdb", "done": n,
+                            "total": len(facts),
+                            "status": "%d rows%s" % (len(facts),
+                                                     ", more" if more else ""),
+                            "embedded": total})
+            print("hermesdb: embedded %d" % n)
+        if more:
+            print("hermesdb: segment full, more on next pass")
 
     if not only or "hermes" in only:
         files = state.setdefault("files", {})

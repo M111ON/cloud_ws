@@ -33,6 +33,24 @@ CREATE TABLE IF NOT EXISTS entries(
   term_hint TEXT, kind TEXT, content TEXT);
 CREATE TABLE IF NOT EXISTS embeddings(entry_id TEXT PRIMARY KEY, dim INT, vec BLOB);
 CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(content, content='entries', content_rowid='rowid');
+
+-- Keep entries_fts in step with entries instead of rebuilding it wholesale.
+-- With content='entries' FTS5 stores only the index, not the text, and the
+-- usual 'delete'/'rebuild' commands are whole-table operations: rebuilding
+-- cost 35.5s at 53.7k rows and grew with every insert, so a daemon adding a
+-- few hundred rows a pass paid for the entire corpus each time. These four
+-- triggers make an insert, update or delete touch only its own row, which is
+-- the only reason to run a 'content=' index without the triggers.
+CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
+  INSERT INTO entries_fts(rowid, content) VALUES (new.rowid, new.content);
+END;
+CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
+  INSERT INTO entries_fts(entries_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+END;
+CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE ON entries BEGIN
+  INSERT INTO entries_fts(entries_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+  INSERT INTO entries_fts(rowid, content) VALUES (new.rowid, new.content);
+END;
 """
 
 
@@ -49,7 +67,7 @@ class LocalEmbed:
         self.tok.enable_truncation(max_length=512)
         self.sess = ort.InferenceSession(
             MODEL_DIR + r"\onnx\model_int8.onnx",
-            providers=["CPUExecutionProvider"])
+            providers=["DmlExecutionProvider", "CPUExecutionProvider"])
 
     def run(self, texts):
         import numpy as np
