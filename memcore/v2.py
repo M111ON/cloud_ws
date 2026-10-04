@@ -182,10 +182,17 @@ def search(db_path, q, k=5):
         if not fts:
             fts = [r[0] for r in db.execute(
                 "SELECT rowid FROM entries_fts WHERE entries_fts MATCH ? "
-                "ORDER BY rank LIMIT ?", (" OR ".join(f'"{w}"' for w in q.split()[:10]), 2 * k))]
+                "ORDER BY rank LIMIT ?",
+                (" OR ".join(f'"{w}"' for w in q.split()[:10]), 2 * k))]
     except sqlite3.OperationalError:
         fts = []
-    id_by_rowid = [r[0] for r in db.execute("SELECT id FROM entries")]
+    # Row order must be explicit. entries is keyed on a TEXT primary key, so a
+    # bare "SELECT id FROM entries" comes back in whatever order SQLite finds
+    # cheapest — measured here, all 56492 rows differed from rowid order, which
+    # made the rowid-1 lookup below pair every FTS hit with the wrong entry.
+    # Ordering by rowid makes the position the index documents actually true.
+    id_by_rowid = [r[0] for r in db.execute(
+        "SELECT id FROM entries ORDER BY rowid")]
     scores = {}
     for i, r in vrank.items():
         scores[rows[i][0]] = scores.get(rows[i][0], 0) + 1.0 / (60 + r)
@@ -197,9 +204,16 @@ def search(db_path, q, k=5):
              for idx, (rid, hint, kind, content, _) in enumerate(rows)}
     out = []
     for eid_, sc in sorted(scores.items(), key=lambda x: -x[1])[:k]:
-        hint, kind, content, vsim = by_id[eid_]
+        hit = by_id.get(eid_)
+        if hit is None:
+            # The FTS and vector passes read the table at slightly different
+            # moments, so a row inserted in between can be scored without ever
+            # being loaded. Skipping costs one result; raising costs the search.
+            continue
+        hint, kind, content, _ = hit
         out.append({"term": hint or eid_[:8], "kind": kind,
-                    "n_sources": 1, "body": content[:1200], "score": round(sc, 4)})
+                    "n_sources": 1, "body": content[:1200],
+                    "score": round(sc, 4)})
     return out
 
 
