@@ -12,7 +12,7 @@ import tempfile
 import time
 
 sys.path.insert(0, ".")
-import freebuff_daemon as fd     # noqa: E402
+import memory_daemon as fd       # noqa: E402
 import v2 as store_v2            # noqa: E402
 
 FAILED = []

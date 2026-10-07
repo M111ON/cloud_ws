@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, r"I:\tools\chat-pool")   # where the block grammar lives
 sys.path.insert(0, ".")
 import pool                      # noqa: E402  the grammar under test
-import freebuff_daemon as fd     # noqa: E402  the consumer
+import memory_daemon as fd       # noqa: E402  the consumer
 
 FAILED = []
 
