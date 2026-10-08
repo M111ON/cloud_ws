@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 fact_store*.sqlite3
 *.err
+# ann_sync runtime state (derived; rebuilt from the store signature)
+.ann_sync_state.json
+.ann_sync.lock
+.ann_sync.log
