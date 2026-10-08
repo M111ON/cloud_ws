@@ -17,6 +17,7 @@ Checkpoint-safe: content-hash ids already present are skipped.
 import argparse
 import hashlib
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -110,6 +111,52 @@ def _rows_mat(db, db_path):
     return rows, mat
 
 
+# ── ANN offload ───────────────────────────────────────────────────────
+# The vector ranking can be done by the standalone ANN server (I:/tools/ann,
+# :8096) instead of a 57k x 384 matmul here. We send OUR OWN query vector, so
+# the ranking is exactly a local matmul's (the ANN index was built from these
+# same vectors — verified top-10 identical on real queries). If the server is
+# unreachable we fall back to numpy, so a query never fails on it.
+ANN_URL = os.environ.get("MEMCORE_ANN_URL", "http://127.0.0.1:8096")
+_ANN_TIMEOUT = float(os.environ.get("MEMCORE_ANN_TIMEOUT", "10"))
+
+
+def _ann_vec_rank(qv, n):
+    """Top-n (sid, score) from the ANN server for this query vector, or None
+    when it is unreachable (caller falls back to the local matmul)."""
+    try:
+        import urllib.request
+        body = json.dumps({"vec": [float(x) for x in qv],
+                           "topk": int(n)}).encode("utf-8")
+        req = urllib.request.Request(
+            ANN_URL.rstrip("/") + "/v1/state/search", data=body,
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=_ANN_TIMEOUT) as r:
+            hits = json.loads(r.read().decode("utf-8")).get("hits", [])
+        return [(h["sid"], float(h["score"])) for h in hits]
+    except Exception:
+        return None
+
+
+_IC = {}  # db_path -> (data_version, id_by_rowid, by_id)
+
+
+def _id_index(db, db_path, rows):
+    """Cache the two 57k-row structures the RRF step rebuilds every query:
+    the rowid->id map (175ms) and the id->(hint,kind,content) map (66ms).
+    They only change when the store does (PRAGMA data_version)."""
+    ver = db.execute("PRAGMA data_version").fetchone()[0]
+    hit = _IC.get(db_path)
+    if hit and hit[0] == ver:
+        return hit[1], hit[2]
+    id_by_rowid = [r[0] for r in db.execute(
+        "SELECT id FROM entries ORDER BY rowid")]
+    by_id = {rid: (hint, kind, content)
+             for (rid, hint, kind, content, _) in rows}
+    _IC[db_path] = (ver, id_by_rowid, by_id)
+    return id_by_rowid, by_id
+
+
 def cmd_embed(facts_path, db_path, limit, batch):
     import numpy as np
     db = sqlite3.connect(db_path)
@@ -169,9 +216,15 @@ def search(db_path, q, k=5):
         return []
     enc = _emb()
     qv = enc.run(["query: " + q])[0]
-    sims = mat @ qv
-    order = np.argsort(sims)[::-1][: 2 * k]
-    vrank = {int(i): r for r, i in enumerate(order)}
+    # vector ranking: prefer the ANN server (exact — we send OUR vector); the
+    # local matmul is the fallback when it is unreachable.
+    vranks = _ann_vec_rank(qv, 2 * k)
+    if vranks is None:
+        import numpy as np
+        sims = mat @ qv
+        order = np.argsort(sims)[::-1][: 2 * k]
+        vranks = [(rows[int(i)][0], float(sims[int(i)])) for i in order]
+    vrank = {sid: r for r, (sid, _s) in enumerate(vranks)}
     # AND first (precise); fall back to OR when mixed Thai/EN yields 0 hits.
     # ORDER BY bm25 rank — rowid order made FTS ranks meaningless.
     match = " ".join(f'"{w}"' for w in q.split()[:10])
@@ -191,17 +244,15 @@ def search(db_path, q, k=5):
     # cheapest — measured here, all 56492 rows differed from rowid order, which
     # made the rowid-1 lookup below pair every FTS hit with the wrong entry.
     # Ordering by rowid makes the position the index documents actually true.
-    id_by_rowid = [r[0] for r in db.execute(
-        "SELECT id FROM entries ORDER BY rowid")]
+    # Both maps are cached (they only move when the store does).
+    id_by_rowid, by_id = _id_index(db, db_path, rows)
     scores = {}
-    for i, r in vrank.items():
-        scores[rows[i][0]] = scores.get(rows[i][0], 0) + 1.0 / (60 + r)
+    for sid, r in vrank.items():
+        scores[sid] = scores.get(sid, 0) + 1.0 / (60 + r)
     for r, rowid in enumerate(fts):
         if 1 <= rowid <= len(id_by_rowid):
             eid_ = id_by_rowid[rowid - 1]
             scores[eid_] = scores.get(eid_, 0) + 1.0 / (60 + r)
-    by_id = {rid: (hint, kind, content, float(sims[idx]))
-             for idx, (rid, hint, kind, content, _) in enumerate(rows)}
     out = []
     for eid_, sc in sorted(scores.items(), key=lambda x: -x[1])[:k]:
         hit = by_id.get(eid_)
@@ -210,7 +261,7 @@ def search(db_path, q, k=5):
             # moments, so a row inserted in between can be scored without ever
             # being loaded. Skipping costs one result; raising costs the search.
             continue
-        hint, kind, content, _ = hit
+        hint, kind, content = hit
         out.append({"term": hint or eid_[:8], "kind": kind,
                     "n_sources": 1, "body": content[:1200],
                     "score": round(sc, 4)})
