@@ -4,7 +4,7 @@
 memory_daemon.py embeds new chat/fact rows into
     I:\\tools\\cloud_ws\\memcore\\fact_store.v2.sqlite3
 but the ANN server serves a DERIVED index
-    I:\\tools\\ann\\data\\memcore\\kv_index.jsonl
+    I:\\tools\\ann\\data\\memcore\\ann_index.jsonl
 that nothing rebuilds on its own — so without this step the :8096 index
 silently drifts behind the store (it was last built 2026-10-08, the store keeps
 growing).
@@ -47,9 +47,16 @@ STORE = os.environ.get("MEMCORE_STORE_DB",
                        str(HERE / "fact_store.v2.sqlite3"))
 ANN_ROOT = os.environ.get("ANN_ROOT", r"I:\tools\ann")
 BUILD_INDEX = os.path.join(ANN_ROOT, "scripts", "build_index.py")
+# The index was renamed kv_* -> ann_* (2026-10-11, ann 5b20435); the server serves
+# data/memcore/ann_index.jsonl. This default kept the OLD name, so every sync built
+# kv_index.jsonl and then REFUSED the regrow ("server serves ann_index.jsonl, we
+# built kv_index.jsonl") — the served index silently froze while sync still said
+# "in sync". Keep this in step with what the server reports at /health (its
+# "index" field), which is the authority — NOT build_index.py's generic
+# <root>/data/ default, since the live instance lives under data/memcore/.
 INDEX_OUT = os.environ.get("ANN_INDEX_OUT",
                            os.path.join(ANN_ROOT, "data", "memcore",
-                                        "kv_index.jsonl"))
+                                        "ann_index.jsonl"))
 ANN_BASE = os.environ.get("MEMCORE_ANN_URL", "http://127.0.0.1:8096").rstrip("/")
 REGROW_URL = ANN_BASE + "/v1/state/regrow"
 HEALTH_URL = ANN_BASE + "/health"
@@ -243,6 +250,7 @@ def main():
         return 0
     try:
         # 1. base index (no anchors) — pure function of the store
+        rebuilt = False
         if a.force or st.get("built") != sig:
             rc, tail, err = build_index(out)
             if rc != 0:
@@ -251,12 +259,20 @@ def main():
             log("ann_sync: built base index (%s) from store %s" % (tail, sig))
             st["built"] = sig
             save_state(st)
+            rebuilt = True
 
         # 2. train anchors server-side so the index is routable
         if a.no_regrow:
             log("ann_sync: --no-regrow, base index only")
             return 0
-        if st.get("regrow") == sig and not a.force:
+        # A REBUILD WIPES THE ROUTING STAMPS: build_index.py writes rows
+        # without the anchor/anchor2 fields (by design — the server's regrow
+        # adds them). So even when the store signature is unchanged, a
+        # rebuild in THIS pass means the served routing table is gone and
+        # the regrow must run again. Skipping it on "regrow == sig" left
+        # live :8096 serving 4 scored rows out of 62,204 while /health said
+        # routed=1 (measured 2026-10-20).
+        if st.get("regrow") == sig and not a.force and not rebuilt:
             st["synced"] = sig
             save_state(st)
             log("ann_sync: anchors already current for %s" % sig)
