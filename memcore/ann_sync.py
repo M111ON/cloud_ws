@@ -47,6 +47,12 @@ STORE = os.environ.get("MEMCORE_STORE_DB",
                        str(HERE / "fact_store.v2.sqlite3"))
 ANN_ROOT = os.environ.get("ANN_ROOT", r"I:\tools\ann")
 BUILD_INDEX = os.path.join(ANN_ROOT, "scripts", "build_index.py")
+# The TAG sidecar (scripts/tag_lut.py) labels the index rows with the
+# semantic tag (memcore's `pattern`) and the frozen zone ids. It is SID-keyed
+# and re-baked from the store, so it must be re-baked whenever the index is
+# rebuilt: a sidecar older than the index leaves the new rows unlabeled and
+# a tag scope silently misses them.
+TAG_LUT = os.path.join(ANN_ROOT, "scripts", "tag_lut.py")
 # The index was renamed kv_* -> ann_* (2026-10-11, ann 5b20435); the server serves
 # data/memcore/ann_index.jsonl. This default kept the OLD name, so every sync built
 # kv_index.jsonl and then REFUSED the regrow ("server serves ann_index.jsonl, we
@@ -203,6 +209,14 @@ def build_index(out):
     return r.returncode, tail[0], (r.stderr or "")[-500:]
 
 
+def bake_tags(out):
+    """Re-bake the tag sidecar for the index that was just written."""
+    cmd = [sys.executable, TAG_LUT, "--db", STORE, "--index", out]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    tail = (r.stdout or "").strip().splitlines()[-1:] or [""]
+    return r.returncode, tail[0], (r.stderr or "")[-500:]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
@@ -260,6 +274,12 @@ def main():
             st["built"] = sig
             save_state(st)
             rebuilt = True
+            # the tag sidecar labels the rows of THAT index -> re-bake it
+            rc, ttail, terr = bake_tags(out)
+            if rc != 0:
+                log("ann_sync: tag_lut FAILED rc=%d %s" % (rc, terr))
+                return 7
+            log("ann_sync: tag sidecar re-baked (%s)" % ttail)
 
         # 2. train anchors server-side so the index is routable
         if a.no_regrow:
